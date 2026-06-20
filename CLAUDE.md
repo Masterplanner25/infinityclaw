@@ -31,7 +31,7 @@ claw/gateway/server.py   ClawGateway + build_app()
   ├── BindingResolver    channel/peer → agent_id routing
   ├── SkillLoader/Gate   file-based skills with allow/deny
   ├── MemoryManager      SQLite recall + injection
-  ├── ToolRegistry       shared tool defs; scoped_executor injects agent_id
+  ├── ToolRegistry       shared tool defs; scoped_executor enforces permissions + injects agent_id
   ├── CronManager        APScheduler cron jobs
   ├── AuthManager        JWT issuance + SqliteApiKeyStore
   ├── KnowledgeIndex     SQLite FTS5 workspace knowledge index (optional)
@@ -40,8 +40,9 @@ claw/gateway/server.py   ClawGateway + build_app()
   ├── KnowledgeWatcher   watchfiles-based background task; auto-reindexes on change (optional)
   ├── WorkspaceStore     SQLite workspace object store (optional)
   ├── WorkspaceManager   async wrapper; Documents, Tasks, Assets, Permissions per agent
-  ├── PermissionEnforcer per-turn capability enforcer; filters tool defs + checks calls
   └── _AsyncAINDYClient  optional AINDY bridge (claw/aindy/client.py)
+  [per-turn, not stored on gateway]
+  └── PermissionEnforcer built fresh each _run_turn from agent_cfg.capabilities
 ```
 
 `build_app(cfg)` returns `(FastAPI, ClawGateway)` — this signature is test-critical, do not change it.
@@ -57,9 +58,10 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 4. Build system prompt via `PromptContext` (order: identity files → runtime → boot files → memories → knowledge → skills)
 5. Append user message; compact if needed; prune
 6. Fire AINDY events: `claw.session.started` if new session, `sys.v1.claw.turn.start` (both fire-and-forget, skipped if AINDY disabled)
-7. `await turn.run(...)` via `scoped_executor` which injects both `agent_id` **and** `execution_unit_id` into memory **and** workspace tool inputs — streams chunks to WebChat or collects for other channels
-8. Append assistant message; deliver response
-9. Fire AINDY `turn.complete` or `turn.error` event
+7. Build `PermissionEnforcer(agent_cfg.capabilities)`; call `filter_tool_definitions()` to remove denied tools from the list passed to the LLM
+8. `await turn.run(...)` via `scoped_executor` which: (a) calls `enforcer.check_tool_call()` — returns JSON error on `PermissionDenied`; (b) injects `agent_id` + `execution_unit_id` for memory/workspace tools; streams chunks to WebChat or collects for other channels
+9. Append assistant message; deliver response
+10. Fire AINDY `turn.complete` or `turn.error` event
 
 ### Session management
 - `asyncio.Lock` per session key — **not** `nodus_queue`. Sessions are serialized per-key, concurrent across different keys.
@@ -162,6 +164,8 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | Private network block is unconditional | `browser_fetch` always blocks RFC-1918 + loopback regardless of `external_http` config. There is no config switch to allow private network access. |
 | `PermissionDenied` returns JSON error | `scoped_executor` catches `PermissionDenied` and returns `json.dumps({"error": "permission denied: ..."})` — the LLM sees a tool result, not an exception. |
 | `KnowledgeWatcher` uses `_listener_tasks` | The watcher asyncio task is stored in `_listener_tasks["knowledge-watcher"]` so it is automatically cancelled by `shutdown()` with all other listener tasks. |
+| `skill_use` capability not wired | `CapabilitySet.skill_use` (`SkillPermission`) is defined in the model but not enforced. Skill gating still uses the global `[skills] allow/deny` config via `SkillGate`. Wire `agent_cfg.capabilities.skill_use` into `SkillGate` in Phase 8+. |
+| `filesystem.paths` only active when `fs.read/write = True` | `_check_filesystem` early-returns (allows) when `fs.read = False` — workspace tools always pass through. Path-scope validation only runs when read/write is explicitly `True` AND paths are set. This means `filesystem.paths` has no effect on current workspace-scoped tools; it is reserved for future absolute-path tools. |
 
 ## Package layout
 
@@ -179,7 +183,7 @@ claw_slack/             Slack adapter
 claw_telegram/          Telegram adapter
 claw_webchat/           Built-in browser UI + WebSocket adapter
 workflows/              Nodus DSL scripts (.nd)
-tests/                  Milestone test suites (84/84)
+tests/                  Milestone test suites (100/100)
 skills/                 User skill files (empty by default)
 workspace/              Agent workspace placeholder (.gitkeep)
 ```
