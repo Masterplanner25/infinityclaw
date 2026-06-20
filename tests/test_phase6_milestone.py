@@ -135,7 +135,7 @@ async def test_memory_manager_sqlite() -> None:
             # Reopen with same DB — memory survives
             cfg2 = MemoryConfig(enabled=True, db_path=str(Path(tmpdir) / "memory.db"))
             mgr2 = MemoryManager(cfg2, state_dir=tmpdir)
-            recalled = mgr2.get("main", node.id)
+            recalled = await mgr2.get("main", node.id)
             assert recalled is not None and recalled.content == "Persistent memory test"
             check("Memory survives manager restart", PASS)
             mgr2.close()

@@ -51,6 +51,8 @@ enabled = false
 # url = "http://localhost:8000"
 # api_key = ""
 # emit_events = true
+# memory_backend = "local"   # "local" | "aindy" | "aindy-fallback"
+# user_id = "claw"
 
 # ------------------------------------------------------------------
 # Skills (empty — use bundled defaults)

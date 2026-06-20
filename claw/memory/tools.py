@@ -178,7 +178,7 @@ def _make_forget_handler(memory_manager: "MemoryManager"):
         node_id = input.get("node_id", "").strip()
         if not node_id:
             return json.dumps({"error": "node_id is required"})
-        deleted = memory_manager.forget(agent_id, node_id)
+        deleted = await memory_manager.forget(agent_id, node_id)
         return json.dumps({"deleted": deleted, "node_id": node_id})
     return handler
 
@@ -187,7 +187,7 @@ def _make_list_handler(memory_manager: "MemoryManager"):
     async def handler(input: dict) -> str:
         agent_id = input.get("_agent_id", "main")
         limit = int(input.get("limit", 20))
-        nodes = memory_manager.list_all(agent_id, limit=limit)
+        nodes = await memory_manager.list_all(agent_id, limit=limit)
         results = [
             {
                 "id": n.id,

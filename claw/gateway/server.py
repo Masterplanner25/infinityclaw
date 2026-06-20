@@ -74,8 +74,25 @@ class ClawGateway:
         self.skill_gate = SkillGate(allow=config.skills.allow, deny=config.skills.deny)
         self.skills_injector = SkillsInjector()
 
+        # AINDY client (optional; None when disabled or aindy_sdk not installed)
+        # Initialised before MemoryManager so it can be passed to the memory backend.
+        self._aindy: Optional["_AsyncAINDYClient"] = None
+        if config.aindy.enabled and config.aindy.api_key:
+            try:
+                from claw.aindy.client import _AsyncAINDYClient
+                self._aindy = _AsyncAINDYClient(config.aindy.url, config.aindy.api_key)
+                logger.info("[gateway] AINDY client initialized url=%s", config.aindy.url)
+            except Exception as exc:
+                logger.warning("[gateway] AINDY client init failed: %s", exc)
+
         # Memory
-        self.memory_manager = MemoryManager(config.memory, state_dir=config.state_dir)
+        self.memory_manager = MemoryManager(
+            config.memory,
+            state_dir=config.state_dir,
+            aindy_client=self._aindy,
+            aindy_memory_backend=config.aindy.memory_backend,
+            aindy_user_id=config.aindy.user_id,
+        )
         self.memory_injector = MemoryInjector()
 
         # WebChat (always registered)
@@ -87,16 +104,6 @@ class ClawGateway:
 
         # Cron scheduler (set in startup if cron jobs configured)
         self.cron_manager: Optional["CronManager"] = None
-
-        # AINDY client (optional; None when disabled or aindy_sdk not installed)
-        self._aindy: Optional["_AsyncAINDYClient"] = None
-        if config.aindy.enabled and config.aindy.api_key:
-            try:
-                from claw.aindy.client import _AsyncAINDYClient
-                self._aindy = _AsyncAINDYClient(config.aindy.url, config.aindy.api_key)
-                logger.info("[gateway] AINDY client initialized url=%s", config.aindy.url)
-            except Exception as exc:
-                logger.warning("[gateway] AINDY client init failed: %s", exc)
 
         # Background listener tasks for non-WebChat adapters
         self._listener_tasks: dict[str, asyncio.Task] = {}

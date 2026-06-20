@@ -138,6 +138,8 @@ class AINDYConfig(BaseModel):
     url: str = "http://localhost:8000"
     api_key: str = ""           # aindy_* platform key or JWT bearer token
     emit_events: bool = True    # fire-and-forget sys.v1.event.emit on turn lifecycle
+    memory_backend: str = "local"  # "local" | "aindy" | "aindy-fallback"
+    user_id: str = "claw"       # MAS identity root for path namespacing
 
 
 class CronJobConfig(BaseModel):

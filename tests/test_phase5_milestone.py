@@ -71,28 +71,28 @@ async def test_memory_manager() -> None:
         check("recall() returns relevant nodes", PASS, f"{len(nodes)} nodes")
 
         # List all
-        all_nodes = mgr.list_all("main")
+        all_nodes = await mgr.list_all("main")
         assert len(all_nodes) == 2
         check("list_all() returns all nodes", PASS, f"{len(all_nodes)} nodes")
 
         # Agent isolation — coder agent has separate store
         await mgr.remember("coder", "Coder agent specializes in Python", tags=["role"])
-        main_nodes = mgr.list_all("main")
-        coder_nodes = mgr.list_all("coder")
+        main_nodes = await mgr.list_all("main")
+        coder_nodes = await mgr.list_all("coder")
         assert len(main_nodes) == 2
         assert len(coder_nodes) == 1
         check("Per-agent memory isolation", PASS, f"main={len(main_nodes)}, coder={len(coder_nodes)}")
 
         # Forget
-        deleted = mgr.forget("main", node.id)
+        deleted = await mgr.forget("main", node.id)
         assert deleted
-        all_after = mgr.list_all("main")
+        all_after = await mgr.list_all("main")
         assert len(all_after) == 1
         assert not any(n.id == node.id for n in all_after)
         check("forget() deletes node", PASS)
 
         # Forget unknown — returns False
-        assert not mgr.forget("main", "nonexistent-id")
+        assert not await mgr.forget("main", "nonexistent-id")
         check("forget() unknown returns False", PASS)
 
         # Disabled mode
@@ -502,7 +502,7 @@ def test_webchat_with_memory() -> None:
                     check("Remember tool invocation via chat", FAIL, f.get("message", "error"))
 
                 # Check memory was stored
-                memories = gw.memory_manager.list_all("main")
+                memories = asyncio.run(gw.memory_manager.list_all("main"))
                 if any("blue" in m.content.lower() or "color" in m.content.lower() for m in memories):
                     check("Memory stored in MemoryManager", PASS, f"{len(memories)} total memories")
                 else:

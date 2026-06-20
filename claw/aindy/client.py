@@ -29,6 +29,9 @@ class _AsyncAINDYClient:
     async def memory_list(self, path: str, **kwargs: Any) -> dict[str, Any]:
         return await asyncio.to_thread(self._sync.memory.list, path, **kwargs)
 
+    async def memory_delete(self, path: str, **kwargs: Any) -> dict[str, Any]:
+        return await asyncio.to_thread(self._sync.memory.delete, path, **kwargs)
+
     async def submit_job(self, task_name: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         return await asyncio.to_thread(
             self._sync.syscalls.call,
