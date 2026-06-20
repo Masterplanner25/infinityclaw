@@ -141,6 +141,11 @@ class KnowledgeConfig(BaseModel):
     top_k: int = 5
 
 
+class WorkspaceConfig(BaseModel):
+    enabled: bool = False
+    db_path: str = ""    # defaults to ~/.claw/workspace.db
+
+
 class AINDYConfig(BaseModel):
     enabled: bool = False
     url: str = "http://localhost:8000"
@@ -173,6 +178,7 @@ class ClawConfig(BaseModel):
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     aindy: AINDYConfig = Field(default_factory=AINDYConfig)
     cron: list[CronJobConfig] = Field(default_factory=list)
     state_dir: str = "~/.claw"

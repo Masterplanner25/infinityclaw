@@ -65,25 +65,27 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 - `claw workspace index` CLI command
 - `tests/test_aindy_phase5.py` — 38 checks, 12 pytest-collected tests
 
----
-
-## Planned
-
 ### Phase 6 — Workspace as First-Class Object
 *Workspaces become explicit, shareable, multi-agent containers*
 
 **Capabilities unlocked:**
 - Multiple agents operating inside one workspace with role-based access
-- Workspace objects: Documents, Memories, Tasks, Assets with stable IDs
-- Relationship graph: typed edges between workspace objects
-- Workspace sharing: another Claw instance (or Weave node) can mount a read-only workspace
+- Workspace objects: Documents, Tasks, Assets with stable IDs
+- Per-agent permissions (read/write/none) enforced at manager level
+- Agents can create and manage documents and tasks across sessions via tools
 
-**Work:**
-- `claw/workspace/model.py` — `Workspace`, `Document`, `Task`, `Asset` data models
-- AINDY MAS as the workspace object store (beyond just memory nodes)
+**Work (complete):**
+- `claw/workspace/model.py` — `Workspace`, `Document`, `Task`, `Asset`, `WorkspacePermission` data models
+- `claw/workspace/store.py` — `WorkspaceStore`: SQLite-backed, five-table schema
+- `claw/workspace/manager.py` — `WorkspaceManager`: async interface, `ensure_workspace()`, `can_read()`, `can_write()`
+- `claw/workspace/tools.py` — 6 agent tools: `ws_create_task`, `ws_list_tasks`, `ws_update_task`, `ws_create_document`, `ws_list_documents`, `ws_get_document`
+- `WorkspaceConfig` in `claw/config/schema.py`; `ClawGateway` wires manager + tools in startup
 - `claw workspace create / list / share` CLI commands
-- Per-agent workspace permissions (read/write/none per object type)
-- Cross-workspace references (Phase 6.5)
+- `tests/test_aindy_phase6.py` — 73 checks, 12 pytest-collected tests
+
+---
+
+## Planned
 
 ### Phase 7 — Permissions and Filesystem Access
 *Agents can access the real filesystem — safely*

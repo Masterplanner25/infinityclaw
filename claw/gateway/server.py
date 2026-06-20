@@ -35,6 +35,8 @@ from claw.tools.registry import ToolRegistry
 from claw.tools.standard import register_standard_tools
 from claw.workspace.bootstrapper import WorkspaceBootstrapper
 from claw.workspace.initializer import WorkspaceInitializer
+from claw.workspace.store import WorkspaceStore
+from claw.workspace.manager import WorkspaceManager
 from claw.knowledge.index import KnowledgeIndex
 from claw.knowledge.retrieval import KnowledgeRetriever
 from claw.knowledge.injector import KnowledgeInjector
@@ -120,6 +122,18 @@ class ClawGateway:
             self.knowledge_retriever = None
             self.knowledge_injector = None
 
+        # Workspace object store (optional; None when disabled)
+        if config.workspace.enabled:
+            _workspace_db = (
+                config.workspace.db_path
+                or str(self._state_dir / "workspace.db")
+            )
+            self.workspace_manager: Optional[WorkspaceManager] = WorkspaceManager(
+                WorkspaceStore(_workspace_db)
+            )
+        else:
+            self.workspace_manager = None
+
         # WebChat (always registered)
         self.webchat_adapter = WebChatAdapter()
         self.channel_registry.register(self.webchat_adapter)
@@ -194,6 +208,14 @@ class ClawGateway:
         if self.memory_manager.is_enabled():
             register_memory_tools(self.tool_registry, self.memory_manager)
             logger.info("[gateway] memory tools registered")
+
+        # Workspace tools — registered once; agent_id injected per turn by scoped executor
+        if self.workspace_manager is not None:
+            from claw.workspace.tools import register_workspace_tools
+            for agent_cfg in agents:
+                await self.workspace_manager.ensure_workspace(agent_cfg.id, agent_cfg.name)
+            register_workspace_tools(self.tool_registry, self.workspace_manager)
+            logger.info("[gateway] workspace object tools registered")
 
         await self.channel_registry.connect_all()
 
@@ -351,13 +373,14 @@ class ClawGateway:
             if is_webchat:
                 await self.webchat_adapter.stream_chunk(peer_id, chunk)
 
-        # Scoped executor: injects agent_id + execution_unit_id into memory tool
-        # inputs so handlers know which agent's store to use and can tag the write.
+        # Scoped executor: injects agent_id + execution_unit_id into memory and
+        # workspace tool inputs so handlers know which agent's store to use.
         from claw.memory.tools import is_memory_tool
+        from claw.workspace.tools import is_workspace_tool
         _base_exec = self.tool_registry.executor()
 
         async def scoped_executor(name: str, inp: dict):
-            if is_memory_tool(name):
+            if is_memory_tool(name) or is_workspace_tool(name):
                 inp = {
                     "_agent_id": agent_id,
                     "_execution_unit_id": execution_unit_id,

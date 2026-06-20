@@ -44,11 +44,24 @@ def main() -> None:
     p_ag_add.add_argument("--default", action="store_true")
 
     # workspace
-    p_workspace = sub.add_parser("workspace", help="Manage workspace files")
+    p_workspace = sub.add_parser("workspace", help="Manage workspace files and objects")
     ws_sub = p_workspace.add_subparsers(dest="workspace_cmd")
     p_ws_index = ws_sub.add_parser("index", help="Index workspace files for knowledge retrieval")
     p_ws_index.add_argument("--agent", default="", dest="agent_id", metavar="ID",
                             help="Agent to index (default: all agents)")
+    p_ws_create = ws_sub.add_parser("create", help="Create a workspace object store for an agent")
+    p_ws_create.add_argument("name", help="Workspace name")
+    p_ws_create.add_argument("--description", default="", help="Optional description")
+    p_ws_create.add_argument("--agent", default="main", dest="agent_id", metavar="ID",
+                             help="Agent ID that owns this workspace (default: main)")
+    ws_sub.add_parser("list", help="List all workspace objects")
+    p_ws_share = ws_sub.add_parser("share", help="Grant an agent access to a workspace")
+    p_ws_share.add_argument("workspace_id", help="Workspace ID to share")
+    p_ws_share.add_argument("--agent", required=True, dest="agent_id", metavar="ID",
+                            help="Agent ID to grant access to")
+    p_ws_share.add_argument("--perm", default="read", dest="level",
+                            choices=["none", "read", "write"],
+                            help="Permission level (default: read)")
 
     # cron
     p_cron = sub.add_parser("cron", help="Manage cron jobs")
@@ -427,9 +440,15 @@ def _cmd_agents(args) -> None:
 def _cmd_workspace(args) -> None:
     from claw.config.loader import load_config
     config = load_config(getattr(args, "config", None))
-    cmd = getattr(args, "workspace_cmd", "index") or "index"
+    cmd = getattr(args, "workspace_cmd", None)
 
-    if cmd == "index":
+    if cmd == "create":
+        _cmd_workspace_create(args, config)
+    elif cmd == "list":
+        _cmd_workspace_list(args, config)
+    elif cmd == "share":
+        _cmd_workspace_share(args, config)
+    elif cmd == "index" or cmd is None:
         if not config.knowledge.enabled:
             print("Knowledge layer is disabled.")
             print("Set [knowledge] enabled = true in claw.toml to enable it.")
@@ -478,6 +497,104 @@ def _cmd_workspace(args) -> None:
             print(f"  Total [{agent_id}]: {len(files)} file(s), {total_chunks} chunk(s) indexed")
 
         idx.close()
+
+
+def _cmd_workspace_create(args, config) -> None:
+    import asyncio
+    from pathlib import Path
+    from claw.workspace.model import Workspace
+    from claw.workspace.store import WorkspaceStore
+    from claw.workspace.manager import WorkspaceManager
+
+    if not config.workspace.enabled:
+        print("Workspace objects are disabled.")
+        print("Set [workspace] enabled = true in claw.toml to enable them.")
+        sys.exit(1)
+
+    state_dir = Path(config.state_dir).expanduser()
+    db_path = config.workspace.db_path or str(state_dir / "workspace.db")
+    store = WorkspaceStore(db_path)
+    manager = WorkspaceManager(store)
+
+    agent_id = getattr(args, "agent_id", "main") or "main"
+    name = getattr(args, "name", "")
+    description = getattr(args, "description", "") or ""
+
+    async def _create():
+        ws = Workspace(id=agent_id, name=name, description=description, owner_agent_id=agent_id)
+        created = await manager.create_workspace(ws)
+        print(f"Workspace created:")
+        print(f"  id          = {created.id}")
+        print(f"  name        = {created.name}")
+        print(f"  owner       = {created.owner_agent_id}")
+        if created.description:
+            print(f"  description = {created.description}")
+
+    asyncio.run(_create())
+    store.close()
+
+
+def _cmd_workspace_list(args, config) -> None:
+    import asyncio
+    from pathlib import Path
+    from claw.workspace.store import WorkspaceStore
+    from claw.workspace.manager import WorkspaceManager
+
+    if not config.workspace.enabled:
+        print("Workspace objects are disabled.")
+        print("Set [workspace] enabled = true in claw.toml to enable them.")
+        sys.exit(1)
+
+    state_dir = Path(config.state_dir).expanduser()
+    db_path = config.workspace.db_path or str(state_dir / "workspace.db")
+    store = WorkspaceStore(db_path)
+    manager = WorkspaceManager(store)
+
+    async def _list():
+        workspaces = await manager.list_workspaces()
+        if not workspaces:
+            print("No workspaces found.")
+            return
+        for ws in workspaces:
+            print(f"  [{ws.id}]  name={ws.name!r}  owner={ws.owner_agent_id}"
+                  + (f"  desc={ws.description!r}" if ws.description else ""))
+
+    asyncio.run(_list())
+    store.close()
+
+
+def _cmd_workspace_share(args, config) -> None:
+    import asyncio
+    from pathlib import Path
+    from claw.workspace.model import WorkspacePermission
+    from claw.workspace.store import WorkspaceStore
+    from claw.workspace.manager import WorkspaceManager
+
+    if not config.workspace.enabled:
+        print("Workspace objects are disabled.")
+        print("Set [workspace] enabled = true in claw.toml to enable them.")
+        sys.exit(1)
+
+    state_dir = Path(config.state_dir).expanduser()
+    db_path = config.workspace.db_path or str(state_dir / "workspace.db")
+    store = WorkspaceStore(db_path)
+    manager = WorkspaceManager(store)
+
+    workspace_id = getattr(args, "workspace_id", "")
+    agent_id = getattr(args, "agent_id", "")
+    level = getattr(args, "level", "read")
+
+    async def _share():
+        ws = await manager.get_workspace(workspace_id)
+        if not ws:
+            print(f"Workspace {workspace_id!r} not found.")
+            sys.exit(1)
+        perm = WorkspacePermission(workspace_id=workspace_id, agent_id=agent_id, level=level)
+        await manager.set_permission(perm)
+        print(f"Permission set: agent={agent_id!r} -> workspace={workspace_id!r} level={level!r}")
+
+    asyncio.run(_share())
+    store.close()
 
 
 def _cmd_cron(args) -> None:

@@ -7,7 +7,7 @@
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
 - Python: 3.11+ (venv at `C:\dev\claw\venv`)
-- Tests: `pytest tests/ -q` → 72/72 (never break this baseline)
+- Tests: `pytest tests/ -q` → 84/84 (never break this baseline)
 
 ## How to run
 
@@ -16,6 +16,9 @@ venv\Scripts\python.exe -m claw start          # gateway at http://127.0.0.1:187
 venv\Scripts\python.exe -m pytest tests/ -q    # test suite
 venv\Scripts\python.exe -m claw doctor         # subsystem health check
 venv\Scripts\python.exe -m claw workspace index  # re-index workspace files (requires knowledge.enabled = true)
+venv\Scripts\python.exe -m claw workspace create <name> --agent <id>  # create workspace object store
+venv\Scripts\python.exe -m claw workspace list   # list workspaces (requires workspace.enabled = true)
+venv\Scripts\python.exe -m claw workspace share <id> --agent <id> --perm <read|write|none>
 ```
 
 ## Architecture overview
@@ -34,6 +37,8 @@ claw/gateway/server.py   ClawGateway + build_app()
   ├── KnowledgeIndex     SQLite FTS5 workspace knowledge index (optional)
   ├── KnowledgeRetriever async retrieval wrapper; top-K chunks per turn
   ├── KnowledgeInjector  formats chunks into ## Relevant Knowledge prompt block
+  ├── WorkspaceStore     SQLite workspace object store (optional)
+  ├── WorkspaceManager   async wrapper; Documents, Tasks, Assets, Permissions per agent
   └── _AsyncAINDYClient  optional AINDY bridge (claw/aindy/client.py)
 ```
 
@@ -50,7 +55,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 4. Build system prompt via `PromptContext` (order: identity files → runtime → boot files → memories → knowledge → skills)
 5. Append user message; compact if needed; prune
 6. Fire AINDY events: `claw.session.started` if new session, `sys.v1.claw.turn.start` (both fire-and-forget, skipped if AINDY disabled)
-7. `await turn.run(...)` via `scoped_executor` which injects both `agent_id` **and** `execution_unit_id` — streams chunks to WebChat or collects for other channels
+7. `await turn.run(...)` via `scoped_executor` which injects both `agent_id` **and** `execution_unit_id` into memory **and** workspace tool inputs — streams chunks to WebChat or collects for other channels
 8. Append assistant message; deliver response
 9. Fire AINDY `turn.complete` or `turn.error` event
 
@@ -76,6 +81,17 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 - Startup scan: on `ClawGateway.startup()`, all workspace files (per agent) are scanned and indexed.
 - `claw workspace index [--agent ID]` CLI command re-indexes on demand.
 - `PromptContext.knowledge_block` injected between memories and skills in `SystemPromptBuilder`.
+
+### Workspace object layer (`claw/workspace/`)
+- **Enabled** via `[workspace] enabled = true` in `claw.toml`. Disabled by default.
+- `WorkspaceStore` — SQLite store (sync, like `MemorySqliteStore`) with five tables: `workspaces`, `ws_documents`, `ws_tasks`, `ws_assets`, `ws_permissions`. Pass `db_path=":memory:"` in tests.
+- `WorkspaceManager` — async wrapper via `asyncio.to_thread`. Each agent gets a home workspace with `id == agent_id`, created via `ensure_workspace()` (idempotent).
+- Objects: `Workspace`, `Document`, `Task` (status: open/in_progress/done/cancelled), `Asset`, `WorkspacePermission` (level: none/read/write).
+- **Permissions**: owner always has full read/write; other agents need an explicit grant via `set_permission()`. `can_read()` and `can_write()` are async.
+- **Tools** (`claw/workspace/tools.py`): `ws_create_task`, `ws_list_tasks`, `ws_update_task`, `ws_create_document`, `ws_list_documents`, `ws_get_document`. Registered via `register_workspace_tools()` in `startup()`. Agent_id injected by `scoped_executor` (LLM never sees it).
+- Startup: `ensure_workspace(agent_id)` called for each agent so the home workspace exists before tools run.
+- `WorkspaceConfig.db_path = ":memory:"` for tests.
+- CLI: `claw workspace create <name>`, `claw workspace list`, `claw workspace share <id> --agent <id> --perm <level>`
 
 ### AINDY bridge (`claw/aindy/client.py`)
 - `_AsyncAINDYClient` wraps `aindy_sdk.AINDYClient` (sync, stdlib urllib) via `asyncio.to_thread()`.
@@ -114,6 +130,10 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | FTS5 rank ordering | `ORDER BY rank` in FTS5 returns best matches first (rank is BM25, negative values; more negative = better match). |
 | `ingest_file()` UUIDs | Each call to `ingest_file()` generates fresh `chunk_id` UUIDs. Always call `clear_source()` before re-ingesting a file to avoid phantom FTS5 entries. |
 | `WorkspaceScanner` scope | Scans top-level of workspace dir only (non-recursive). Excludes `ALL_WORKSPACE_FILES` and files with unsupported extensions. |
+| `WorkspaceStore` home workspace | Each agent's home workspace uses `id == agent_id`. `create_workspace()` uses `INSERT OR IGNORE` — safe to call twice. Use `ensure_workspace()` on manager to get-or-create. |
+| `WorkspaceStore` upsert by name | `upsert_document()` matches on `(workspace_id, name)` — same name replaces body. The original `id` is preserved (returned in result). |
+| Workspace tools scope | `ws_*` tools always operate on the calling agent's home workspace (`_agent_id` injected by `scoped_executor`). Cross-workspace access is Phase 8+. |
+| `WorkspaceConfig.db_path` | `":memory:"` for tests (same pattern as `MemoryConfig`). Empty string → `~/.claw/workspace.db`. |
 
 ## Package layout
 
@@ -121,6 +141,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 claw/                   core package
 claw/aindy/             AINDY bridge: client.py, memory_store.py, app_registration.py
 claw/knowledge/         Knowledge layer: ingestion.py, index.py, retrieval.py, injector.py, scanner.py
+claw/workspace/         Workspace layer: model.py, store.py, manager.py, tools.py, bootstrapper.py, initializer.py
 claw/gateway/server.py  ClawGateway + build_app() + _build_claw_router()
 claw_discord/           Discord adapter
 claw_matrix/            Matrix adapter
@@ -129,7 +150,7 @@ claw_slack/             Slack adapter
 claw_telegram/          Telegram adapter
 claw_webchat/           Built-in browser UI + WebSocket adapter
 workflows/              Nodus DSL scripts (.nd)
-tests/                  Milestone test suites (72/72)
+tests/                  Milestone test suites (84/84)
 skills/                 User skill files (empty by default)
 workspace/              Agent workspace placeholder (.gitkeep)
 ```
@@ -150,11 +171,12 @@ workspace/              Agent workspace placeholder (.gitkeep)
 
 `CLAW_AINDY_INTEGRATION_PLAN.md` in the repo root is the authoritative phase-by-phase migration plan.
 
-**Phases 1–5 are complete:**
+**Phases 1–6 are complete:**
 - Phase 1: SDK wiring + lifespan + turn lifecycle events
 - Phase 2: AINDY memory backend (`AINDYMemoryStore`, `_aindy_or_local`, `memory_backend` config)
 - Phase 3: Execution tracking — `execution_unit_id` per turn, `claw.session.*` / `claw.memory.written` / `claw.cron.executed` events
 - Phase 4: Gateway mount — `_build_claw_router()`, `build_app()` dual-mode, `GatewayAuth(bypass=True)`, `register_claw_app()`
 - Phase 5: Knowledge layer — `claw/knowledge/` package, SQLite FTS5 index, workspace scanner, retriever, injector, `claw workspace index` CLI
+- Phase 6: Workspace objects — `WorkspaceStore`, `WorkspaceManager`, Documents/Tasks/Assets/Permissions, 6 agent tools, CLI `create`/`list`/`share`
 
-Phases 6+ (workspace as first-class object, permissions, multi-agent, distributed Weave) are on the roadmap.
+Phases 7+ (filesystem permissions, multi-agent coordination, distributed Weave) are on the roadmap.
