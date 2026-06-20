@@ -13,9 +13,9 @@ User / External System
         ↓
   Agent Runtime (Nodus + AINDY)
         ↓
-  Knowledge Layer  ←──────────────────── [Phase 5+]
+  Knowledge Layer  ←──────────────────── [Phase 5 — FTS5 file index]
         ↓
-  Memory / Workspace / Tools
+  Memory / Workspace Objects / Tools  ←── [Phase 6 — Documents, Tasks, Assets]
         ↓
   AINDY Execution Kernel
 ```
@@ -43,7 +43,8 @@ The gateway is the coordination hub. It owns:
 - `SkillLoader` / `SkillGate` — file-based skills with allow/deny
 - `MemoryManager` — SQLite or AINDY MAS memory + recall injection
 - `KnowledgeIndex` / `KnowledgeRetriever` / `KnowledgeInjector` — FTS5 workspace knowledge (optional, Phase 5)
-- `ToolRegistry` — shared tool definitions; `scoped_executor` injects `agent_id` per turn
+- `WorkspaceStore` / `WorkspaceManager` — SQLite workspace objects: Documents, Tasks, Assets, Permissions (optional, Phase 6)
+- `ToolRegistry` — shared tool definitions; `scoped_executor` injects `agent_id` + `execution_unit_id` per turn
 - `CronManager` — APScheduler-backed cron jobs
 - `AuthManager` — JWT issuance + `SqliteApiKeyStore`
 - `_AsyncAINDYClient` — optional async bridge to AINDY runtime
@@ -64,7 +65,7 @@ Each agent is a `ConversationalTurn` (Nodus-managed) wrapping a direct `anthropi
 3. Build system prompt (PromptContext: identity → runtime → boot → memories → knowledge → skills)
 4. Append user message; compact if needed; prune
 5. Fire AINDY session.started (if new) + turn.start events (fire-and-forget)
-6. turn.run() → stream chunks to channel
+6. turn.run() via scoped_executor (injects agent_id + execution_unit_id into memory and workspace tools)
 7. Append assistant response
 8. Fire AINDY turn.complete / turn.error event
 ```
@@ -97,6 +98,28 @@ Enabled via `[knowledge] enabled = true` in `claw.toml`. Startup scan indexes al
 
 ---
 
+### Workspace Object Layer *(Phase 6 — complete)*
+
+The workspace object layer gives agents persistent, structured objects beyond raw files and memories. Agents create and manage Documents, Tasks, and Assets through tools; operators manage per-agent permissions through the CLI.
+
+```
+Agent tool call (ws_create_task / ws_create_document / ...)
+    ↓
+scoped_executor  ← injects _agent_id (LLM never sees it)
+    ↓
+WorkspaceManager (async)  ← ensure_workspace() on first access
+    ↓
+WorkspaceStore (sync SQLite)
+    Tables: workspaces | ws_documents | ws_tasks | ws_assets | ws_permissions
+```
+
+**Permission model:** Each agent owns a home workspace (`workspace_id == agent_id`). Other agents can be granted `read`, `write`, or `none` access via `WorkspacePermission`. `can_read()` / `can_write()` enforce this at the manager layer.
+
+Enabled via `[workspace] enabled = true` in `claw.toml`. Home workspaces are created via `ensure_workspace()` at startup.  
+CLI: `claw workspace create / list / share`.
+
+---
+
 ### Memory
 
 Two storage backends, selectable per deployment:
@@ -116,6 +139,8 @@ Memory is per-agent namespaced. The LLM sees recalled memories injected into the
 Tools are registered on a shared `ToolRegistry` and scoped at call time. The `scoped_executor` injects `agent_id` before dispatching, so tool handlers never receive routing information from the LLM.
 
 Built-in tools: `remember`, `recall`, `list_memories`, `forget`, `browser_fetch`.
+
+Workspace tools (Phase 6, requires `workspace.enabled = true`): `ws_create_task`, `ws_list_tasks`, `ws_update_task`, `ws_create_document`, `ws_list_documents`, `ws_get_document`.
 
 Skills extend the tool surface through file-based `.skill` definitions with allow/deny gating per agent.
 
@@ -154,8 +179,8 @@ User → Telegram
         → PromptContext.build()
         → ConversationalTurn.run()
             → anthropic.messages.stream()
-            → [tool calls → ToolRegistry.invoke()]
-        → MemoryManager.remember() [if LLM triggered]
+            → [tool calls → scoped_executor → ToolRegistry.invoke()]
+        → MemoryManager.remember() / WorkspaceManager writes [if LLM triggered]
         → TelegramAdapter.send_message(response)
     → AINDY turn.complete event (fire-and-forget)
 ```

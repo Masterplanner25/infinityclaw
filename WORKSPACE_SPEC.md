@@ -15,13 +15,13 @@ This is the distinction that separates Infinity Claw from a chatbot:
 
 ```
 Workspace
- ├── Identity     (id, name, owner)
- ├── Documents    (files, notes, reference material)
- ├── Memories     (agent-persisted structured knowledge)
- ├── Tasks        (tracked work items, outcomes)
- ├── Assets       (images, data, binary artifacts)
- ├── Agents       (which agents operate in this workspace)
- └── Relationships (links between workspace objects)
+ ├── Identity     (id, name, owner_agent_id, created_at)
+ ├── Documents    (DB-backed: id, name, content_type, body — agent-created notes and records)
+ ├── Memories     (agent-persisted structured knowledge via MemoryManager)
+ ├── Tasks        (tracked work items with lifecycle: open → in_progress → done/cancelled)
+ ├── Assets       (references to binary/external artifacts: id, name, content_type, path)
+ ├── Agents       (which agents operate in this workspace, with permissions)
+ └── Relationships (typed edges between objects — Phase 8+)
 ```
 
 ---
@@ -30,130 +30,159 @@ Workspace
 
 ### Identity
 
-Every workspace has a stable identity:
+Every workspace has a stable explicit identity (Phase 6):
 
 ```
-workspace_id: string    # unique identifier
-name:         string    # human-readable label
-owner:        string    # user_id of the operator
-created_at:   datetime
+Workspace
+ ├── id:              string    # stable identifier; == agent_id for home workspaces
+ ├── name:            string    # human-readable label
+ ├── owner_agent_id:  string    # agent that owns and has full access
+ ├── description:     string    # optional
+ └── created_at:      datetime
 ```
 
-Today, the workspace identity is implicit — `agent_id` serves as the workspace namespace. In Phase 5+, workspaces become explicit first-class objects that can be shared across agents.
+Each agent automatically gets a home workspace with `id == agent_id`, created via `WorkspaceManager.ensure_workspace()` at gateway startup.
 
 ---
 
 ### Documents
 
-Documents are the primary knowledge substrate. A document is any content the agent should be able to reference: notes, project plans, specifications, research, meeting records.
-
-**Current state:** Documents are files in `~/.claw/agents/{agent_id}/workspace/`. They are loaded verbatim and injected into the system prompt at turn time.
-
-**Future state (Phase 5+):**
+Documents are named, typed content objects that persist across sessions (Phase 6).
 
 ```
 Document
- ├── id            (stable reference ID)
- ├── path          (filesystem path or URL)
- ├── content_type  (markdown, plaintext, PDF, code, ...)
- ├── chunks        (indexed for retrieval)
- ├── embeddings    (vector representations)
- ├── metadata      (author, created_at, tags, source)
- └── relationships (links to other documents, memories, tasks)
+ ├── id:           UUID    # stable reference ID
+ ├── workspace_id: string
+ ├── name:         string  # unique within workspace; upsert-by-name semantics
+ ├── content_type: string  # text | markdown | code | json | csv
+ ├── body:         string  # full content
+ ├── created_at:   datetime
+ └── updated_at:   datetime
 ```
 
-Documents are ingested through the knowledge pipeline (see `KNOWLEDGE_MODEL.md`) rather than injected verbatim. The agent retrieves relevant chunks at turn time rather than receiving all documents unconditionally.
+Agents create and update documents via the `ws_create_document` tool. Documents with the same `name` in the same workspace are updated in place (upsert-by-name); the original `id` is preserved.
+
+**Relationship to file-based workspace:** Markdown files in `~/.claw/agents/{agent_id}/workspace/` remain the identity/boot layer (AGENTS.md, SOUL.md, etc.) and the knowledge index source. DB Documents are a separate, agent-managed layer — structured records the agent creates at runtime.
 
 ---
 
 ### Memories
 
-Memories are agent-generated structured knowledge. Unlike documents (which are operator-provided), memories are created by the agent during its work.
+Memories are agent-generated structured knowledge. Unlike documents (operator-provided files or agent-created DB records), memories are created by the agent *in response to conversations*.
 
 ```
 Memory Node
- ├── id            (UUID)
- ├── agent_id      (which agent created this)
- ├── content       (natural language description)
- ├── node_type     (insight | decision | outcome | failure)
- ├── tags          (searchable labels)
- ├── extra         (execution_unit_id, source context)
- └── created_at
+ ├── id:            UUID
+ ├── agent_id:      string
+ ├── content:       string    # natural language description
+ ├── node_type:     string    # insight | decision | outcome | failure
+ ├── tags:          list[str]
+ ├── extra:         dict      # execution_unit_id, source context
+ └── created_at:   datetime
 ```
 
-Memories are recalled semantically at turn time and injected into the system prompt. They represent what the agent has *learned* across sessions — decisions made, outcomes observed, patterns recognized.
+Memories are recalled semantically at turn time via `MemoryManager.recall()` and injected into the system prompt. Backend: local SQLite or AINDY MAS (configurable via `[aindy] memory_backend`).
 
 ---
 
 ### Tasks
 
-Tasks are tracked work items. They differ from memories in that they have an explicit lifecycle (open → in progress → complete → abandoned) and can be referenced by other workspace objects.
+Tasks are tracked work items with an explicit lifecycle (Phase 6).
 
-**Current state:** Tasks are not explicitly modeled. Agents track task-like information through memories.
+```
+Task
+ ├── id:           UUID
+ ├── workspace_id: string
+ ├── title:        string
+ ├── body:         string    # optional details
+ ├── status:       enum      # open | in_progress | done | cancelled
+ ├── priority:     int       # higher = more urgent; tasks sorted priority DESC
+ ├── created_at:   datetime
+ └── updated_at:   datetime
+```
 
-**Future state (Phase 5+):** Tasks are first-class workspace objects with structured status, assignee (which agent), due dates, and linked documents/memories.
+Agents create, list, and update tasks via `ws_create_task`, `ws_list_tasks`, and `ws_update_task` tools. Tasks persist across sessions in the workspace SQLite DB.
 
 ---
 
 ### Assets
 
-Assets are binary or non-textual workspace objects: images, data files, exported artifacts, generated outputs.
+Assets are references to binary or non-textual workspace objects: images, data files, exported artifacts (Phase 6).
 
-**Current state:** Assets are files in the workspace directory, accessible like documents.
+```
+Asset
+ ├── id:           UUID
+ ├── workspace_id: string
+ ├── name:         string
+ ├── content_type: string  # binary | image | data | ...
+ ├── path:         string  # filesystem path or URL
+ ├── size_bytes:   int
+ └── created_at:   datetime
+```
 
-**Future state (Phase 5+):** Assets are typed, tagged, and linked to the document and memory graph. The agent can reference an asset by ID rather than path.
+Assets are registered in the workspace DB to give them stable IDs and metadata. They are not stored in the DB themselves — only their reference.
 
 ---
 
-### Agents
+### Agents and Permissions
 
-A workspace declares which agents operate inside it. Multiple agents can share a workspace with different roles:
+A workspace declares which agents can access it, with per-agent permission levels (Phase 6).
 
 ```
-Workspace: "project-alpha"
- ├── Agent: main        (general assistant, full workspace access)
- ├── Agent: coder       (code generation, workspace read-only)
- └── Agent: reviewer    (review and critique, no write access)
+WorkspacePermission
+ ├── workspace_id: string
+ ├── agent_id:     string
+ └── level:        enum    # none | read | write
 ```
 
-**Current state:** Each agent has its own isolated workspace. Workspace sharing is not yet implemented.
+The workspace **owner** always has full read+write access, regardless of explicit permissions. Other agents require an explicit grant via `WorkspaceManager.set_permission()`.
 
-**Future state (Phase 5+):** Multiple agents share a workspace with per-agent permission scoping.
+```
+claw workspace share <workspace_id> --agent <agent_id> --perm <read|write|none>
+```
+
+`can_read()` / `can_write()` are enforced at the manager layer. Cross-workspace tool access (an agent operating in another agent's workspace) is Phase 8+.
 
 ---
 
 ### Relationships
 
-Relationships are typed links between workspace objects:
+Typed edges between workspace objects — **not yet implemented (Phase 8+).**
 
 ```
 Document A --references--> Document B
 Memory     --derived-from--> Document C
 Task       --produces--> Asset D
-Memory     --contradicts--> Memory E
 ```
-
-Relationships form the **knowledge graph** within a workspace. The agent can traverse relationships to discover relevant context beyond what semantic search returns.
-
-**Current state:** Relationships are not modeled. Agents discover connections through semantic recall.
-
-**Future state (Phase 5+):** Relationships are explicit typed edges in the workspace graph.
 
 ---
 
 ## Workspace Lifecycle
 
 ```
-Created
+Created (explicit via CLI or ensure_workspace())
     ↓
-Bootstrapped     ← workspace directory initialized, default docs loaded
+Bootstrapped     ← file-based workspace dir initialized, default identity docs loaded
     ↓
-Active           ← agents operating inside workspace; memories accumulating
+Active           ← agents operating; memories, documents, tasks accumulating in DB
     ↓
-Knowledge-indexed  ← documents ingested, chunked, embedded (Phase 5+)
+Knowledge-indexed  ← file-based docs ingested into FTS5 index (if knowledge.enabled)
     ↓
 Archived / Reset   ← session reset, scheduled cleanup
 ```
+
+---
+
+## Two-Track Content Model
+
+Infinity Claw has two complementary content tracks in a workspace:
+
+| Track | What | Storage | How injected into prompt |
+|---|---|---|---|
+| **File-based** | Identity/boot docs (AGENTS.md, SOUL.md, etc.) | Filesystem | Verbatim, always |
+| **Knowledge index** | Non-identity files in workspace dir | SQLite FTS5 | Top-K chunks, BM25 ranked |
+| **DB objects** | Agent-created Documents, Tasks, Assets | SQLite (workspace.db) | Via agent tools (not auto-injected) |
+| **Memories** | Agent-learned knowledge | SQLite or AINDY MAS | Semantic recall, top-K |
 
 ---
 
@@ -161,23 +190,23 @@ Archived / Reset   ← session reset, scheduled cleanup
 
 A workspace is a **trust boundary**. Objects inside a workspace are visible to agents operating in that workspace (subject to per-agent permissions). Objects outside a workspace are not visible.
 
-This has implications for:
-
 - **Data isolation:** Multiple workspaces on the same Claw instance are isolated by default
-- **Agent scope:** An agent operating in workspace A cannot access documents or memories in workspace B
-- **Multi-agent coordination (Phase 5+):** Cross-workspace agent communication happens through explicit handoff mechanisms, not shared memory
+- **Agent scope:** An agent's home workspace has `id == agent_id`; other workspaces require an explicit permission grant
+- **Multi-agent coordination (Phase 8+):** Cross-workspace agent communication via AINDY event bus
 
 ---
 
-## Current Implementation vs. Future Model
+## Current Implementation Summary
 
-| Concept | Current | Phase 5+ |
+| Concept | Status | Notes |
 |---|---|---|
-| Workspace identity | Implicit (`agent_id`) | Explicit object with ID, name, owner |
-| Documents | Files in workspace dir | Indexed, chunked, embedded |
-| Memories | SQLite or AINDY MAS nodes | Same, but linked to document/task graph |
-| Tasks | Informal (memory nodes) | First-class objects with lifecycle |
-| Assets | Files in workspace dir | Typed, tagged, linked |
-| Agents per workspace | One | Many, with role-based access |
-| Relationships | None | Typed edges in knowledge graph |
-| Retrieval | Verbatim file injection | Semantic search + graph traversal |
+| Workspace identity | **Phase 6** — explicit `Workspace` object with stable ID | Home workspace `id == agent_id` |
+| File-based documents | **Phase 1** — files in workspace dir, verbatim-injected | Identity/boot files |
+| Knowledge index | **Phase 5** — FTS5 chunk retrieval | Non-identity files, top-K at turn time |
+| DB Documents | **Phase 6** — first-class objects, agent-created | `ws_create_document` tool |
+| Memories | **Phase 1+2** — SQLite or AINDY MAS | `remember`/`recall` tools |
+| Tasks | **Phase 6** — first-class objects with lifecycle | `ws_create_task`/`ws_update_task` tools |
+| Assets | **Phase 6** — typed DB-backed references | Registered by ID, not stored in DB |
+| Agents per workspace | **Phase 6** — `WorkspacePermission` (none/read/write) | Owner always has full access |
+| Relationships | **Phase 8+** — typed edges in knowledge graph | Not yet modeled |
+| Embedding-based retrieval | **Phase 8+** — replace FTS5 with pgvector | KnowledgeRetriever interface stable |

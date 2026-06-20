@@ -16,7 +16,7 @@ venv\Scripts\python.exe -m claw start          # gateway at http://127.0.0.1:187
 venv\Scripts\python.exe -m pytest tests/ -q    # test suite
 venv\Scripts\python.exe -m claw doctor         # subsystem health check
 venv\Scripts\python.exe -m claw workspace index  # re-index workspace files (requires knowledge.enabled = true)
-venv\Scripts\python.exe -m claw workspace create <name> --agent <id>  # create workspace object store
+venv\Scripts\python.exe -m claw workspace create <name> --agent <id>  # create a workspace object for an agent (requires workspace.enabled = true)
 venv\Scripts\python.exe -m claw workspace list   # list workspaces (requires workspace.enabled = true)
 venv\Scripts\python.exe -m claw workspace share <id> --agent <id> --perm <read|write|none>
 ```
