@@ -192,8 +192,9 @@ A workspace is a **trust boundary**. Objects inside a workspace are visible to a
 
 - **Data isolation:** Multiple workspaces on the same Claw instance are isolated by default
 - **Agent scope:** An agent's home workspace has `id == agent_id`; other workspaces require an explicit permission grant
-- **Agent delegation (Phase 8 — complete):** `delegate_to_agent` tool; agents hand off tasks to each other via stateless inner turns.
-- **Cross-workspace tool access (Phase 9 — complete):** `ws_*` tools support `target_agent_id` for cross-agent workspace reads/writes with permission enforcement. AINDY event-bus coordination is Phase 10+.
+- **Agent delegation (Phase 8 — complete):** `delegate_to_agent` tool; agents hand off tasks to each other.
+- **Session-persistent delegation (Phase 10 — complete):** delegated agents accumulate history within a caller session; `run_agent_turn(session_key=...)` uses `ClawSessionManager`; stateless mode preserved when `session_key` is empty.
+- **Cross-workspace tool access (Phase 9 — complete):** `ws_*` tools support `target_agent_id` for cross-agent workspace reads/writes with permission enforcement. AINDY event-bus coordination is Phase 11+.
 
 ---
 
@@ -209,8 +210,9 @@ A workspace is a **trust boundary**. Objects inside a workspace are visible to a
 | Tasks | **Phase 6** — first-class objects with lifecycle | `ws_create_task`/`ws_update_task` tools |
 | Assets | **Phase 6** — typed DB-backed references | Registered by ID, not stored in DB |
 | Agents per workspace | **Phase 6** — `WorkspacePermission` (none/read/write) | Owner always has full access |
-| Agent delegation | **Phase 8** — `delegate_to_agent` tool, `AgentDispatcher`, `run_agent_turn()` | Stateless inner turns |
+| Agent delegation | **Phase 8** — `delegate_to_agent` tool, `AgentDispatcher`, `run_agent_turn()` | Now session-persistent (Phase 10) |
 | Cross-agent memory | **Phase 8** — `cross_agent_memory` on `AgentConfig` | Read-only; write isolation preserved |
 | Cross-workspace tools | **Phase 9** — `target_agent_id` on `ws_*` tools; ID-based tools check implicitly | Requires explicit permission grant |
-| Relationships | **Phase 10+** — typed edges in knowledge graph | Not yet modeled |
-| Embedding-based retrieval | **Phase 10+** — replace FTS5 with pgvector | KnowledgeRetriever interface stable |
+| Session-persistent delegation | **Phase 10** — `run_agent_turn(session_key=...)`, delegation key derivation | LLM needs no new params; stateless preserved |
+| Relationships | **Phase 11+** — typed edges in knowledge graph | Not yet modeled |
+| Embedding-based retrieval | **Phase 11+** — replace FTS5 with pgvector | KnowledgeRetriever interface stable |

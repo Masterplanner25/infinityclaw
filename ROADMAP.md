@@ -146,9 +146,24 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 
 ---
 
+### Phase 10 — Session-Persistent Delegation ✅
+*Delegated agents accumulate conversation history within a caller session*
+
+**Problem solved:** `delegate_to_agent` previously passed a fresh single-message history each call — the target agent started from scratch on every delegation, with no knowledge of prior exchanges.
+
+**What was built:**
+- `HandoffRequest.session_key` — new field threads the delegation session key through the dispatch chain
+- `run_agent_turn(session_key="")` — when `session_key` is provided, uses `ClawSessionManager` (lock + append + compact + prune) so history persists across calls. When empty, stateless Phase 8 behavior.
+- `scoped_executor` in `_run_turn` now injects `_session_key` (the caller's session key) alongside `_agent_id` for coordination tools
+- `delegate_to_agent` handler derives a stable delegation key `delegate:{from}:{caller_session}:{to}` and passes it as `HandoffRequest.session_key` — the LLM needs no new parameters
+- `AgentDispatcher.dispatch` passes `session_key` through to `run_agent_turn`
+- `tests/test_aindy_phase10.py` — 26 checks, 13 pytest-collected functions
+
+---
+
 ## Planned
 
-### Phase 10 — Distributed Workspaces
+### Phase 11 — Distributed Workspaces
 *Workspaces span multiple Claw instances across the Weave*
 
 **Capabilities unlocked:**

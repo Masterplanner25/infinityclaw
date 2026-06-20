@@ -9,6 +9,7 @@ class HandoffRequest(BaseModel):
     to_agent: str
     prompt: str
     context: str = ""
+    session_key: str = ""
 
 
 class HandoffResult(BaseModel):

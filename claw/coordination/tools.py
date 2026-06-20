@@ -24,11 +24,21 @@ def register_delegation_tool(
 
     async def _handle(inp: dict) -> str:
         from claw.coordination.model import HandoffRequest
+        from_agent = inp.get("_agent_id", "unknown")
+        caller_session = inp.get("_session_key", "")
+        to_agent = inp["agent_id"]
+        # Derive a stable delegation session key so the target agent accumulates
+        # history within a caller session (session-persistent delegation, Phase 10).
+        delegation_key = (
+            f"delegate:{from_agent}:{caller_session}:{to_agent}"
+            if caller_session else ""
+        )
         req = HandoffRequest(
-            from_agent=inp.get("_agent_id", "unknown"),
-            to_agent=inp["agent_id"],
+            from_agent=from_agent,
+            to_agent=to_agent,
             prompt=inp["prompt"],
             context=inp.get("context", ""),
+            session_key=delegation_key,
         )
         result = await dispatcher.dispatch(req)
         if result.success:

@@ -7,7 +7,7 @@
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
 - Python: 3.11+ (venv at `C:\dev\claw\venv`)
-- Tests: `pytest tests/ -q` → 132/132 (never break this baseline)
+- Tests: `pytest tests/ -q` → 145/145 (never break this baseline)
 
 ## How to run
 
@@ -40,7 +40,7 @@ claw/gateway/server.py   ClawGateway + build_app()
   ├── KnowledgeWatcher   watchfiles-based background task; auto-reindexes on change (optional)
   ├── WorkspaceStore     SQLite workspace object store (optional)
   ├── WorkspaceManager   async wrapper; Documents, Tasks, Assets, Permissions per agent
-  ├── AgentDispatcher    stateless inner-turn dispatch for agent delegation (optional)
+  ├── AgentDispatcher    session-persistent or stateless inner-turn dispatch for agent delegation (optional)
   └── _AsyncAINDYClient  optional AINDY bridge (claw/aindy/client.py)
   [per-turn, not stored on gateway]
   └── PermissionEnforcer built fresh each _run_turn from agent_cfg.capabilities
@@ -113,9 +113,9 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 
 ### Multi-agent coordination (`claw/coordination/`)
 - **Enabled** via `[coordination] enabled = true` in `claw.toml`. Disabled by default.
-- `AgentDispatcher.dispatch(HandoffRequest)` — runs a stateless inner turn on the target agent via `ClawGateway.run_agent_turn()`. No session history, no channel delivery.
-- `run_agent_turn(agent_id, prompt, context="")` on `ClawGateway` — builds the target agent's full system prompt (workspace + skills + memories + knowledge), runs one turn, returns response text. Returns `"[error: ...]"` on failure.
-- `delegate_to_agent` tool: LLM calls with `agent_id` (target) + `prompt` + optional `context`. `_agent_id` (calling agent) injected by `scoped_executor`. Registered in `startup()` when `coordination.enabled = true`.
+- `AgentDispatcher.dispatch(HandoffRequest)` — runs an inner turn on the target agent via `ClawGateway.run_agent_turn()`. Session-persistent when `HandoffRequest.session_key` is set; stateless otherwise. No channel delivery.
+- `run_agent_turn(agent_id, prompt, context="", session_key="")` on `ClawGateway` — builds the target agent's full system prompt (workspace + skills + memories + knowledge), runs one turn, returns response text. When `session_key` is provided, uses `ClawSessionManager` (lock + compact + prune pipeline) so history accumulates across calls. When empty, stateless (Phase 8 behavior). Returns `"[error: ...]"` on failure.
+- `delegate_to_agent` tool: LLM calls with `agent_id` (target) + `prompt` + optional `context`. `_agent_id` and `_session_key` (calling agent + caller session) injected by `scoped_executor`. Handler derives delegation key `delegate:{from}:{caller_session}:{to}` and passes it as `HandoffRequest.session_key`. Registered in `startup()` when `coordination.enabled = true`.
 - `is_coordination_tool(name)` — returns True for `delegate_to_agent`; used by `scoped_executor` injection check.
 - **Cross-agent memory**: `cross_agent_memory = ["agentA"]` on `[[agents.list]]` causes `_run_turn` to also recall memories from `agentA`'s namespace (up to 3 per source agent).
 - **Per-agent skill gating**: `capabilities.skill_use.allow/deny` on `[[agents.list]]` is applied as a second `SkillGate` pass after the global gate. `["*"]` in the allow list means "all skills" (wildcard).
@@ -178,8 +178,9 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | `KnowledgeWatcher` uses `_listener_tasks` | The watcher asyncio task is stored in `_listener_tasks["knowledge-watcher"]` so it is automatically cancelled by `shutdown()` with all other listener tasks. |
 | `skill_use` capability wired (Phase 8) | `CapabilitySet.skill_use.allow/deny` is now applied as a second `SkillGate` pass in `_run_turn` after the global gate. `SkillGate` treats `["*"]` in allow as "all skills" (wildcard); empty allow also means all. |
 | `filesystem.paths` only active when `fs.read/write = True` | `_check_filesystem` early-returns (allows) when `fs.read = False` — workspace tools always pass through. Path-scope validation only runs when read/write is explicitly `True` AND paths are set. This means `filesystem.paths` has no effect on current workspace-scoped tools; it is reserved for future absolute-path tools. |
-| `delegate_to_agent` is stateless | `run_agent_turn()` passes a fresh single-message history — no session state. The target agent starts from scratch each delegation. Session-persistent delegation is Phase 10+. |
-| `is_coordination_tool` must be imported in scoped_executor | `_run_turn` imports `is_coordination_tool` inline (same as `is_memory_tool`/`is_workspace_tool`) to inject `_agent_id` for `delegate_to_agent`. Without this injection the handler receives no `_agent_id` and `from_agent` defaults to `"unknown"`. |
+| `delegate_to_agent` session persistence | `scoped_executor` injects `_session_key` (the caller's session key) alongside `_agent_id`. The handler derives `delegate:{from}:{caller_session}:{to}` and passes it as `HandoffRequest.session_key` → `run_agent_turn()`. When `_session_key` is empty (no caller session), delegation remains stateless. |
+| `run_agent_turn` session branch | When `session_key` is non-empty, the method acquires `lock_for(session_key)`, appends user message, runs compact + prune, calls `turn.run(messages=...)` with history, then appends the assistant response. Outside the lock, stateless path passes `[{"role": "user", ...}]` only. |
+| `is_coordination_tool` must be imported in scoped_executor | `_run_turn` imports `is_coordination_tool` inline (same as `is_memory_tool`/`is_workspace_tool`) to inject `_agent_id` + `_session_key` for `delegate_to_agent`. Without this injection the handler receives no `_agent_id` and `from_agent` defaults to `"unknown"`. |
 
 ## Package layout
 
@@ -230,5 +231,6 @@ workspace/              Agent workspace placeholder (.gitkeep)
 - Phase 7: Permissions layer — `claw/permissions/` package, `CapabilitySet` config model on `AgentConfig`, `PermissionEnforcer` (tool allow/deny, HTTP enforcement, private network block)
 - Phase 8: Multi-agent coordination — `claw/coordination/` package, `AgentDispatcher`, `delegate_to_agent` tool, `run_agent_turn()`, per-agent skill gating (`skill_use`), cross-agent memory recall
 - Phase 9: Cross-workspace tool access — `target_agent_id` on `ws_*` list/create tools; implicit permission check on `ws_get_document`/`ws_update_task` via object `workspace_id`
+- Phase 10: Session-persistent delegation — `run_agent_turn(session_key=...)`, delegation session key derivation in `delegate_to_agent` handler, `_session_key` injection in `scoped_executor` and `_inner_exec`, `HandoffRequest.session_key` field
 
-Phase 10+ (session-persistent delegation, distributed Weave) are on the roadmap.
+Phase 11+ (AINDY event-bus audit trail for delegate_to_agent, distributed Weave) are on the roadmap.

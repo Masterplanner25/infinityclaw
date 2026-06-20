@@ -281,11 +281,14 @@ class ClawGateway:
         await self.channel_registry.disconnect_all()
 
     async def run_agent_turn(
-        self, agent_id: str, prompt: str, context: str = ""
+        self, agent_id: str, prompt: str, context: str = "", session_key: str = ""
     ) -> str:
-        """Run a single stateless turn for agent_id and return the response text.
+        """Run a turn for agent_id and return the response text.
 
-        Used by the delegation tool — no session history, no channel delivery.
+        When session_key is provided the turn is session-persistent: history
+        accumulates across calls and is passed to the LLM on each turn (same
+        compact + prune pipeline as _run_turn). When session_key is empty the
+        turn is stateless — Phase 8 behaviour, preserved for backward compat.
         Returns a string beginning with "[error:" on failure.
         """
         turn = self.agent_registry.get_turn(agent_id)
@@ -342,23 +345,52 @@ class ClawGateway:
                 import json as _json
                 return _json.dumps({"error": f"permission denied: {_exc}"})
             if is_memory_tool(name) or is_workspace_tool(name) or is_coordination_tool(name):
-                inp = {"_agent_id": agent_id, "_execution_unit_id": execution_unit_id, **inp}
+                inp = {
+                    "_agent_id": agent_id,
+                    "_execution_unit_id": execution_unit_id,
+                    "_session_key": session_key,
+                    **inp,
+                }
             return await _base_exec(name, inp)
 
-        try:
-            result = await turn.run(
-                messages=[{"role": "user", "content": full_prompt}],
-                system=system_prompt,
-                tools=_tool_defs or None,
-                on_chunk=None,
-                tool_executor=_inner_exec,
-                max_tokens=self.config.agents.defaults.model.max_tokens,
-                temperature=self.config.agents.defaults.model.temperature,
-            )
-            return result["content"]
-        except Exception as exc:
-            logger.error("[gateway] inner turn error agent=%s: %s", agent_id, exc)
-            return f"[error: {exc}]"
+        if session_key:
+            async with self.session_manager.lock_for(session_key):
+                self.session_manager.append_user_message(session_key, full_prompt)
+                messages = await self.session_manager.compact_if_needed(session_key, turn)
+                self.session_manager.prune_if_needed(session_key)
+                try:
+                    result = await turn.run(
+                        messages=messages,
+                        system=system_prompt,
+                        tools=_tool_defs or None,
+                        on_chunk=None,
+                        tool_executor=_inner_exec,
+                        max_tokens=self.config.agents.defaults.model.max_tokens,
+                        temperature=self.config.agents.defaults.model.temperature,
+                    )
+                    self.session_manager.append_assistant_message(session_key, result["content"])
+                    return result["content"]
+                except Exception as exc:
+                    logger.error(
+                        "[gateway] inner turn error agent=%s session=%s: %s",
+                        agent_id, session_key, exc,
+                    )
+                    return f"[error: {exc}]"
+        else:
+            try:
+                result = await turn.run(
+                    messages=[{"role": "user", "content": full_prompt}],
+                    system=system_prompt,
+                    tools=_tool_defs or None,
+                    on_chunk=None,
+                    tool_executor=_inner_exec,
+                    max_tokens=self.config.agents.defaults.model.max_tokens,
+                    temperature=self.config.agents.defaults.model.temperature,
+                )
+                return result["content"]
+            except Exception as exc:
+                logger.error("[gateway] inner turn error agent=%s: %s", agent_id, exc)
+                return f"[error: {exc}]"
 
     def register_adapter(self, adapter: BaseChannelAdapter) -> None:
         """Register a channel adapter and start its listener (if already started)."""
@@ -512,6 +544,7 @@ class ClawGateway:
                 inp = {
                     "_agent_id": agent_id,
                     "_execution_unit_id": execution_unit_id,
+                    "_session_key": session_key,
                     **inp,
                 }
             return await _base_exec(name, inp)

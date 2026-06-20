@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 class AgentDispatcher:
     """Dispatches a task from one agent to another via an inner turn.
 
-    The target agent processes the prompt without session history — each
-    delegation is stateless. Session continuity for delegated flows is
-    Phase 9+.
+    When HandoffRequest.session_key is set, the target agent runs with
+    session-persistent history (Phase 10). When empty, the turn is
+    stateless (Phase 8 behavior).
     """
 
     def __init__(self, gateway: "ClawGateway") -> None:
@@ -40,6 +40,7 @@ class AgentDispatcher:
             agent_id=req.to_agent,
             prompt=req.prompt,
             context=req.context,
+            session_key=req.session_key,
         )
         success = not response.startswith("[error:")
         return HandoffResult(
