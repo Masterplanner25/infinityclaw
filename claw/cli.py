@@ -63,6 +63,20 @@ def main() -> None:
                             choices=["none", "read", "write"],
                             help="Permission level (default: read)")
 
+    # weave
+    p_weave = sub.add_parser("weave", help="Manage distributed Weave node connections")
+    weave_sub = p_weave.add_subparsers(dest="weave_cmd")
+    weave_sub.add_parser("status", help="Show local node ID and peer count")
+    weave_sub.add_parser("nodes", help="List registered peer nodes")
+    p_weave_connect = weave_sub.add_parser("connect", help="Register a remote peer node")
+    p_weave_connect.add_argument("url", help="Base URL of the remote Claw gateway")
+    p_weave_connect.add_argument("--label", default="", help="Human-readable label")
+    p_weave_connect.add_argument("--key", default="", dest="api_key", help="API key for the remote node")
+    p_weave_connect.add_argument("--no-ping", action="store_true", dest="no_ping",
+                                 help="Skip reachability ping before registering")
+    p_weave_disconnect = weave_sub.add_parser("disconnect", help="Remove a registered peer node")
+    p_weave_disconnect.add_argument("node_id", help="Node ID to remove")
+
     # cron
     p_cron = sub.add_parser("cron", help="Manage cron jobs")
     cron_sub = p_cron.add_subparsers(dest="cron_cmd")
@@ -103,6 +117,8 @@ def main() -> None:
         _cmd_agents(args)
     elif command == "workspace":
         _cmd_workspace(args)
+    elif command == "weave":
+        _cmd_weave(args)
     elif command == "cron":
         _cmd_cron(args)
     else:
@@ -595,6 +611,153 @@ def _cmd_workspace_share(args, config) -> None:
 
     asyncio.run(_share())
     store.close()
+
+
+def _cmd_weave(args) -> None:
+    from claw.config.loader import load_config
+    config = load_config(getattr(args, "config", None))
+    cmd = getattr(args, "weave_cmd", "status") or "status"
+
+    if not config.weave.enabled:
+        print("Weave is disabled.")
+        print("Set [weave] enabled = true in claw.toml to enable it.")
+        sys.exit(1)
+
+    if cmd == "status":
+        _cmd_weave_status(args, config)
+    elif cmd == "nodes":
+        _cmd_weave_nodes(args, config)
+    elif cmd == "connect":
+        _cmd_weave_connect(args, config)
+    elif cmd == "disconnect":
+        _cmd_weave_disconnect(args, config)
+    else:
+        _cmd_weave_status(args, config)
+
+
+def _cmd_weave_status(args, config) -> None:
+    from pathlib import Path
+    from claw.weave.model import get_or_create_node_id
+    from claw.weave.registry import WeaveNodeStore
+
+    state_dir = Path(config.state_dir).expanduser()
+    node_id = get_or_create_node_id(config.weave.node_id, str(state_dir))
+    db_path = config.weave.db_path or str(state_dir / "weave.db")
+
+    peer_count = 0
+    if Path(db_path).exists():
+        store = WeaveNodeStore(db_path)
+        peer_count = len(store.list_nodes())
+        store.close()
+
+    print(f"Weave node")
+    print(f"  node_id = {node_id}")
+    print(f"  peers   = {peer_count}")
+
+
+def _cmd_weave_nodes(args, config) -> None:
+    from pathlib import Path
+    from claw.weave.registry import WeaveNodeStore
+
+    state_dir = Path(config.state_dir).expanduser()
+    db_path = config.weave.db_path or str(state_dir / "weave.db")
+
+    if not Path(db_path).exists():
+        print("No peer nodes registered.")
+        return
+
+    store = WeaveNodeStore(db_path)
+    nodes = store.list_nodes()
+    store.close()
+
+    if not nodes:
+        print("No peer nodes registered.")
+        return
+
+    for n in nodes:
+        label_str = f"  label={n.label!r}" if n.label else ""
+        print(f"  {n.node_id}  {n.url}{label_str}")
+
+
+def _cmd_weave_connect(args, config) -> None:
+    import asyncio
+    from pathlib import Path
+    from claw.weave.model import get_or_create_node_id, WeaveNode
+    from claw.weave.registry import WeaveNodeStore
+    from claw.weave.client import WeaveClient
+
+    state_dir = Path(config.state_dir).expanduser()
+    node_id = get_or_create_node_id(config.weave.node_id, str(state_dir))
+    db_path = config.weave.db_path or str(state_dir / "weave.db")
+
+    url = args.url.rstrip("/")
+    label = getattr(args, "label", "") or ""
+    api_key = getattr(args, "api_key", "") or ""
+    skip_ping = getattr(args, "no_ping", False)
+
+    client = WeaveClient(local_node_id=node_id)
+
+    async def _fetch_node_id() -> str:
+        import httpx
+        headers: dict = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as hc:
+                r = await hc.get(f"{url}/weave/agents", headers=headers)
+                r.raise_for_status()
+                return r.json().get("node_id", "")
+        except Exception as exc:
+            print(f"  Could not fetch remote node_id: {exc}", file=sys.stderr)
+            return ""
+
+    async def _connect():
+        remote_node_id = await _fetch_node_id()
+        if not remote_node_id:
+            print("Failed to retrieve remote node ID. Use --no-ping to skip reachability check.")
+            sys.exit(1)
+
+        remote = WeaveNode(node_id=remote_node_id, url=url, label=label, api_key=api_key)
+
+        if not skip_ping:
+            reachable = await client.ping(remote)
+            if not reachable:
+                print(f"Remote node at {url} is not reachable. Use --no-ping to register anyway.")
+                sys.exit(1)
+
+        store = WeaveNodeStore(db_path)
+        store.register(remote)
+        store.close()
+        print(f"Peer node registered:")
+        print(f"  node_id = {remote_node_id}")
+        print(f"  url     = {url}")
+        if label:
+            print(f"  label   = {label}")
+
+    asyncio.run(_connect())
+
+
+def _cmd_weave_disconnect(args, config) -> None:
+    from pathlib import Path
+    from claw.weave.registry import WeaveNodeStore
+
+    state_dir = Path(config.state_dir).expanduser()
+    db_path = config.weave.db_path or str(state_dir / "weave.db")
+    node_id = args.node_id
+
+    if not Path(db_path).exists():
+        print(f"No weave database found. Node {node_id!r} was not registered.")
+        sys.exit(1)
+
+    store = WeaveNodeStore(db_path)
+    removed = store.remove(node_id)
+    store.close()
+
+    if removed:
+        print(f"Peer node {node_id!r} removed.")
+    else:
+        print(f"Node {node_id!r} not found in registry.")
+        sys.exit(1)
 
 
 def _cmd_cron(args) -> None:

@@ -7,7 +7,7 @@
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
 - Python: 3.11+ (venv at `C:\dev\claw\venv`)
-- Tests: `pytest tests/ -q` → 156/156 (never break this baseline)
+- Tests: `pytest tests/ -q` → 184/184 (never break this baseline)
 
 ## How to run
 
@@ -19,6 +19,10 @@ venv\Scripts\python.exe -m claw workspace index  # re-index workspace files (req
 venv\Scripts\python.exe -m claw workspace create <name> --agent <id>  # create a workspace object for an agent (requires workspace.enabled = true)
 venv\Scripts\python.exe -m claw workspace list   # list workspaces (requires workspace.enabled = true)
 venv\Scripts\python.exe -m claw workspace share <id> --agent <id> --perm <read|write|none>
+venv\Scripts\python.exe -m claw weave status            # show local node_id + peer count (requires weave.enabled = true)
+venv\Scripts\python.exe -m claw weave nodes             # list registered peer nodes
+venv\Scripts\python.exe -m claw weave connect <url>     # register a remote Weave node
+venv\Scripts\python.exe -m claw weave disconnect <id>   # remove a registered peer
 ```
 
 ## Architecture overview
@@ -41,6 +45,8 @@ claw/gateway/server.py   ClawGateway + build_app()
   ├── WorkspaceStore     SQLite workspace object store (optional)
   ├── WorkspaceManager   async wrapper; Documents, Tasks, Assets, Permissions per agent
   ├── AgentDispatcher    session-persistent or stateless inner-turn dispatch for agent delegation (optional)
+  ├── WeaveNodeStore     SQLite peer-node registry (optional; claw/weave/registry.py)
+  ├── WeaveClient        httpx-based cross-node HTTP client (optional; claw/weave/client.py)
   └── _AsyncAINDYClient  optional AINDY bridge (claw/aindy/client.py)
   [per-turn, not stored on gateway]
   └── PermissionEnforcer built fresh each _run_turn from agent_cfg.capabilities
@@ -61,7 +67,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 6. Append user message; compact if needed; prune
 7. Fire AINDY events: `claw.session.started` if new session, `sys.v1.claw.turn.start` (both fire-and-forget, skipped if AINDY disabled)
 8. Build `PermissionEnforcer(agent_cfg.capabilities)`; call `filter_tool_definitions()` to remove denied tools from the list passed to the LLM
-9. `await turn.run(...)` via `scoped_executor` which: (a) calls `enforcer.check_tool_call()` — returns JSON error on `PermissionDenied`; (b) injects `agent_id` + `execution_unit_id` for memory/workspace/coordination tools; streams chunks to WebChat or collects for other channels
+9. `await turn.run(...)` via `scoped_executor` which: (a) calls `enforcer.check_tool_call()` — returns JSON error on `PermissionDenied`; (b) injects `agent_id` + `execution_unit_id` for memory/workspace/coordination/weave tools; streams chunks to WebChat or collects for other channels
 10. Append assistant message; deliver response
 11. Fire AINDY `turn.complete` or `turn.error` event
 
@@ -120,6 +126,21 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 - **Cross-agent memory**: `cross_agent_memory = ["agentA"]` on `[[agents.list]]` causes `_run_turn` to also recall memories from `agentA`'s namespace (up to 3 per source agent).
 - **Per-agent skill gating**: `capabilities.skill_use.allow/deny` on `[[agents.list]]` is applied as a second `SkillGate` pass after the global gate. `["*"]` in the allow list means "all skills" (wildcard).
 - `HandoffResult.success` is `False` when response starts with `"[error:"`. Caller sees the error string in `.error`.
+
+### Weave layer (`claw/weave/`)
+- **Enabled** via `[weave] enabled = true` in `claw.toml`. Disabled by default.
+- `get_or_create_node_id(config_node_id, state_dir)` — returns config value if set; otherwise reads/creates `~/.claw/node_id` (or `<state_dir>/node_id`) as a persistent UUID.
+- `WeaveNodeStore(db_path)` — SQLite registry (`weave_nodes` table). `":memory:"` for tests. Methods: `register()`, `get()`, `list_nodes()`, `remove()`, `close()`. `register()` is `INSERT OR REPLACE` (upsert).
+- `WeaveClient(local_node_id, timeout=10.0)` — `httpx.AsyncClient` for cross-node calls. Methods: `ping(node)->bool`, `list_agents(node)->list[dict]`, `delegate(node, agent_id, prompt, ...)->str`, `register_self(remote, self_node)->bool`. Returns `"[error:...]"` on network failures; never raises.
+- **Tools** (`claw/weave/tools.py`): `weave_delegate`, `weave_list_nodes`, `weave_list_agents`. Registered via `register_weave_tools()` in `startup()`. `_session_key` injected by `scoped_executor`; `weave_delegate` derives `weave:{from_node}:{caller_session}:{to_node}:{agent_id}` as the cross-node session key.
+- `is_weave_tool(name)` — True for the three weave tools; used by `scoped_executor`/`_inner_exec` injection check (same pattern as `is_memory_tool` etc.).
+- **REST endpoints** in `_build_claw_router` (only when `config.weave.enabled`):
+  - `GET /weave/agents` — returns `{node_id, agents: [{agent_id, name}]}`
+  - `GET /weave/nodes` — returns registered peer list
+  - `POST /weave/nodes/register` — body: `WeaveRegisterRequest`; persists peer in `WeaveNodeStore`
+  - `POST /weave/delegate` — body: `WeaveDelegateRequest`; calls `run_agent_turn(agent_id, prompt, ..., session_key=req.session_key)` and returns response
+- `ClawGateway` attributes: `weave_store: Optional[WeaveNodeStore]`, `weave_client: Optional[WeaveClient]`, `_weave_node_id: str`, `weave_node_id` property.
+- CLI: `claw weave status/nodes/connect/disconnect` (requires `weave.enabled = true`).
 
 ### Knowledge watcher (`claw/knowledge/watcher.py`)
 - `KnowledgeWatcher.watch(agents)` is a background coroutine started in `ClawGateway.startup()` when knowledge is enabled.
@@ -182,6 +203,11 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | `run_agent_turn` session branch | When `session_key` is non-empty, the method acquires `lock_for(session_key)`, appends user message, runs compact + prune, calls `turn.run(messages=...)` with history, then appends the assistant response. Outside the lock, stateless path passes `[{"role": "user", ...}]` only. |
 | `is_coordination_tool` must be imported in scoped_executor | `_run_turn` imports `is_coordination_tool` inline (same as `is_memory_tool`/`is_workspace_tool`) to inject `_agent_id` + `_session_key` for `delegate_to_agent`. Without this injection the handler receives no `_agent_id` and `from_agent` defaults to `"unknown"`. |
 | Delegation audit events (Phase 11) | `AgentDispatcher` fires `claw.delegation.started`, `claw.delegation.complete`, `claw.delegation.error` via `asyncio.create_task` (fire-and-forget, same pattern as turn events in `server.py`). Unknown-agent path fires no events. `delegation_id` UUID ties started/complete/error together in the AINDY audit log. `_emit_event` helper in `dispatcher.py` swallows all exceptions — AINDY unavailability never blocks a delegation. |
+| Weave `node_id` persistence | `get_or_create_node_id("", state_dir)` writes `<state_dir>/node_id` on first call and returns the same UUID thereafter. Config `weave.node_id` takes precedence when set. |
+| `WeaveNodeStore` is sync SQLite | Same pattern as `MemorySqliteStore` and `WorkspaceStore`. Pass `":memory:"` in tests. Empty `db_path` resolves to `~/.claw/weave.db`. |
+| Weave tools injected same as coordination | `is_weave_tool(name)` is imported inline in both `scoped_executor` and `_inner_exec`; they both check `or is_weave_tool(name)` so `_agent_id`, `_execution_unit_id`, `_session_key` are injected. The `weave_delegate` handler extracts `_session_key` to build the cross-node session key `weave:{from_node}:{caller_session}:{to_node}:{agent_id}`. |
+| Weave REST endpoints conditional | All `/weave/*` routes are only registered inside `if config.weave.enabled:` in `_build_claw_router`. When disabled, the block is skipped entirely. |
+| `WeaveClient` never raises | All `WeaveClient` methods catch `Exception` and return `False` / `[]` / `"[error:...]"` — network failures never propagate to the LLM tool call. |
 
 ## Package layout
 
@@ -189,6 +215,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 claw/                   core package
 claw/aindy/             AINDY bridge: client.py, memory_store.py, app_registration.py
 claw/coordination/      Multi-agent coordination: model.py, dispatcher.py, tools.py
+claw/weave/             Distributed Weave layer: model.py, registry.py, client.py, tools.py
 claw/knowledge/         Knowledge layer: ingestion.py, index.py, retrieval.py, injector.py, scanner.py, watcher.py
 claw/permissions/       Permissions layer: model.py, enforcer.py
 claw/workspace/         Workspace layer: model.py, store.py, manager.py, tools.py, bootstrapper.py, initializer.py
@@ -234,5 +261,6 @@ workspace/              Agent workspace placeholder (.gitkeep)
 - Phase 9: Cross-workspace tool access — `target_agent_id` on `ws_*` list/create tools; implicit permission check on `ws_get_document`/`ws_update_task` via object `workspace_id`
 - Phase 10: Session-persistent delegation — `run_agent_turn(session_key=...)`, delegation session key derivation in `delegate_to_agent` handler, `_session_key` injection in `scoped_executor` and `_inner_exec`, `HandoffRequest.session_key` field
 - Phase 11: Delegation audit trail — `AgentDispatcher` emits `claw.delegation.started` / `claw.delegation.complete` / `claw.delegation.error` via `asyncio.create_task` (fire-and-forget); `delegation_id` UUID per dispatch for correlation; `persistent` flag in payload
+- Phase 12: Distributed Workspaces (Weave) — `claw/weave/` package; `WeaveNodeStore` (SQLite peer registry); `WeaveClient` (httpx cross-node HTTP); `weave_delegate` / `weave_list_nodes` / `weave_list_agents` tools; `WeaveConfig` in `ClawConfig`; `/weave/*` REST endpoints in `_build_claw_router`; `claw weave` CLI; `is_weave_tool` injection in `scoped_executor` and `_inner_exec`
 
-Phase 12+ (distributed Weave) are on the roadmap.
+Phase 13+ (workspace data replication, Weave-wide agent discovery) are on the roadmap.

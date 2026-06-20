@@ -178,23 +178,44 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 
 ---
 
-## Planned
-
-### Phase 12 — Distributed Workspaces
-*Workspaces span multiple Claw instances across the Weave*
+### Phase 12 — Distributed Workspaces (Weave) ✅
+*Multiple Claw instances form a peer network; agents delegate across nodes*
 
 **Capabilities unlocked:**
-- A workspace hosted on one Claw instance is accessible to agents on another
-- Knowledge, memories, and tasks replicate across Weave nodes
-- An agent on Node A can query the workspace of Node B (with permission)
+- An agent on Node A can delegate tasks to an agent running on Node B
+- Cross-node delegation is session-persistent: `weave:{from_node}:{session}:{to_node}:{agent}` key accumulates history
+- Peer node discovery: `weave_list_nodes` / `weave_list_agents` tools let agents find remote agents
+- Node registration via REST (`POST /weave/nodes/register`) and CLI (`claw weave connect`)
+- Weave-wide agent listing at `GET /weave/agents` (each node exposes its own agent roster)
+
+**Work (complete):**
+- `claw/weave/model.py` — `WeaveNode`, `WeaveDelegateRequest`, `WeaveRegisterRequest`, `get_or_create_node_id()`
+- `claw/weave/registry.py` — `WeaveNodeStore`: SQLite peer registry (`INSERT OR REPLACE`; `":memory:"` for tests)
+- `claw/weave/client.py` — `WeaveClient`: `httpx.AsyncClient`; `ping`, `list_agents`, `delegate`, `register_self`; all methods swallow exceptions and return safe defaults
+- `claw/weave/tools.py` — `weave_delegate`, `weave_list_nodes`, `weave_list_agents`; `is_weave_tool()`; `register_weave_tools()`
+- `claw/config/schema.py` — `WeaveConfig(enabled, node_id, db_path)` + `ClawConfig.weave` field
+- `claw/gateway/server.py` — `weave_store`, `weave_client`, `_weave_node_id`, `weave_node_id` property; Weave init in `__init__`; `register_weave_tools()` in `startup()`; `is_weave_tool` injection in both `scoped_executor` and `_inner_exec`; `/weave/*` REST endpoints in `_build_claw_router` (conditional on `weave.enabled`)
+- `claw/cli.py` — `claw weave status/nodes/connect/disconnect` subcommands
+- `tests/test_aindy_phase12.py` — 38 checks, 28 pytest-collected functions
+
+---
+
+## Planned
+
+### Phase 13 — Workspace Data Replication
+*Workspace documents and tasks replicate across Weave nodes*
+
+**Capabilities unlocked:**
+- A workspace hosted on Node A replicates its documents and tasks to Node B
+- An agent on any Weave node can read/write a workspace owned by another node (with permission)
+- Knowledge index synchronized across nodes
 - Weave-wide agent discovery: "find me an agent that can do X"
 
-**Work:**
-- AINDY Weave topology integration (node registry, routing)
-- Workspace replication protocol (AINDY event bus + MAS sync)
-- Cross-node session handoff
-- Weave-scoped agent registry
-- `claw weave` CLI commands
+**Work (planned):**
+- AINDY event-bus replication protocol for workspace objects
+- Cross-node `WorkspacePermission` enforcement
+- Weave-scoped agent registry (multi-node discovery)
+- Knowledge index sync across Weave peers
 
 ---
 

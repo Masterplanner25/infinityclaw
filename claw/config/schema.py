@@ -163,6 +163,12 @@ class CoordinationConfig(BaseModel):
     enabled: bool = False  # register delegate_to_agent tool; enable agent handoff
 
 
+class WeaveConfig(BaseModel):
+    enabled: bool = False
+    node_id: str = ""   # empty = auto-generate UUID on first start
+    db_path: str = ""   # empty -> ~/.claw/weave.db
+
+
 class CronJobConfig(BaseModel):
     id: str = ""
     agent_id: str = "main"
@@ -188,6 +194,7 @@ class ClawConfig(BaseModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     aindy: AINDYConfig = Field(default_factory=AINDYConfig)
     coordination: CoordinationConfig = Field(default_factory=CoordinationConfig)
+    weave: WeaveConfig = Field(default_factory=WeaveConfig)
     cron: list[CronJobConfig] = Field(default_factory=list)
     state_dir: str = "~/.claw"
     log_level: str = "info"

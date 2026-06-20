@@ -135,6 +135,26 @@ class ClawGateway:
         else:
             self.workspace_manager = None
 
+        # Weave node registry + client (optional; None when disabled)
+        if config.weave.enabled:
+            from claw.weave.model import get_or_create_node_id
+            from claw.weave.registry import WeaveNodeStore
+            from claw.weave.client import WeaveClient
+            _weave_db = (
+                config.weave.db_path
+                or str(self._state_dir / "weave.db")
+            )
+            self._weave_node_id: str = get_or_create_node_id(
+                config.weave.node_id, str(self._state_dir)
+            )
+            self.weave_store: Optional[WeaveNodeStore] = WeaveNodeStore(_weave_db)
+            self.weave_client: Optional[WeaveClient] = WeaveClient(self._weave_node_id)
+            logger.info("[gateway] Weave node_id=%s", self._weave_node_id)
+        else:
+            self._weave_node_id = ""
+            self.weave_store = None
+            self.weave_client = None
+
         # WebChat (always registered)
         self.webchat_adapter = WebChatAdapter()
         self.channel_registry.register(self.webchat_adapter)
@@ -151,6 +171,10 @@ class ClawGateway:
         # Background listener tasks for non-WebChat adapters
         self._listener_tasks: dict[str, asyncio.Task] = {}
         self._initialized = False
+
+    @property
+    def weave_node_id(self) -> str:
+        return self._weave_node_id
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -251,6 +275,12 @@ class ClawGateway:
             register_delegation_tool(self.tool_registry, self.agent_dispatcher)
             logger.info("[gateway] coordination delegation tool registered")
 
+        # Weave tools — cross-node delegation + discovery (optional; requires weave.enabled = true)
+        if self.weave_store is not None and self.weave_client is not None:
+            from claw.weave.tools import register_weave_tools
+            register_weave_tools(self.tool_registry, self.weave_store, self.weave_client)
+            logger.info("[gateway] weave tools registered node_id=%s", self._weave_node_id)
+
         # Cron manager
         try:
             from claw.cron.manager import CronManager
@@ -336,6 +366,7 @@ class ClawGateway:
         from claw.memory.tools import is_memory_tool
         from claw.workspace.tools import is_workspace_tool
         from claw.coordination.tools import is_coordination_tool
+        from claw.weave.tools import is_weave_tool
         _base_exec = self.tool_registry.executor()
 
         async def _inner_exec(name: str, inp: dict):
@@ -344,7 +375,8 @@ class ClawGateway:
             except PermissionDenied as _exc:
                 import json as _json
                 return _json.dumps({"error": f"permission denied: {_exc}"})
-            if is_memory_tool(name) or is_workspace_tool(name) or is_coordination_tool(name):
+            if (is_memory_tool(name) or is_workspace_tool(name)
+                    or is_coordination_tool(name) or is_weave_tool(name)):
                 inp = {
                     "_agent_id": agent_id,
                     "_execution_unit_id": execution_unit_id,
@@ -532,6 +564,7 @@ class ClawGateway:
         from claw.memory.tools import is_memory_tool
         from claw.workspace.tools import is_workspace_tool
         from claw.coordination.tools import is_coordination_tool
+        from claw.weave.tools import is_weave_tool
         _base_exec = self.tool_registry.executor()
 
         async def scoped_executor(name: str, inp: dict):
@@ -540,7 +573,8 @@ class ClawGateway:
             except PermissionDenied as _exc:
                 import json as _json
                 return _json.dumps({"error": f"permission denied: {_exc}"})
-            if is_memory_tool(name) or is_workspace_tool(name) or is_coordination_tool(name):
+            if (is_memory_tool(name) or is_workspace_tool(name)
+                    or is_coordination_tool(name) or is_weave_tool(name)):
                 inp = {
                     "_agent_id": agent_id,
                     "_execution_unit_id": execution_unit_id,
@@ -759,6 +793,55 @@ def _build_claw_router(gateway: ClawGateway, config: ClawConfig) -> APIRouter:
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Key not found")
         return {"revoked": True, "key_id": key_id}
+
+    # Weave endpoints — only registered when weave is enabled
+    if config.weave.enabled:
+        from claw.weave.model import WeaveRegisterRequest, WeaveDelegateRequest
+
+        @router.get("/weave/agents", include_in_schema=False)
+        async def weave_agents():
+            agents = [
+                {"agent_id": a.id, "name": a.name}
+                for a in (gateway.config.agents.agents or [])
+            ]
+            return {"node_id": gateway.weave_node_id, "agents": agents}
+
+        @router.get("/weave/nodes", include_in_schema=False)
+        async def weave_nodes():
+            if gateway.weave_store is None:
+                return {"nodes": []}
+            nodes = gateway.weave_store.list_nodes()
+            return {"nodes": [
+                {"node_id": n.node_id, "url": n.url, "label": n.label}
+                for n in nodes
+            ]}
+
+        @router.post("/weave/nodes/register", include_in_schema=False)
+        async def weave_nodes_register(req: WeaveRegisterRequest):
+            if gateway.weave_store is None:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=503, detail="Weave not enabled")
+            from claw.weave.model import WeaveNode
+            gateway.weave_store.register(
+                WeaveNode(
+                    node_id=req.node_id,
+                    url=req.url,
+                    label=req.label,
+                    api_key=req.api_key,
+                )
+            )
+            return {"registered": True, "node_id": req.node_id}
+
+        @router.post("/weave/delegate", include_in_schema=False)
+        async def weave_delegate(req: WeaveDelegateRequest):
+            session_key = req.session_key or ""
+            response = await gateway.run_agent_turn(
+                agent_id=req.agent_id,
+                prompt=req.prompt,
+                context=req.context,
+                session_key=session_key,
+            )
+            return {"response": response, "agent_id": req.agent_id}
 
     return router
 
