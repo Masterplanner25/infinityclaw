@@ -1,0 +1,60 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+MANIFEST
+pip-wheel-metadata/
+
+# --- Virtualenv ---
+venv/
+.venv/
+env/
+.env/
+
+# --- Environment / secrets ---
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# --- Testing ---
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.lcov
+junit*.xml
+
+# --- Type checking / linting ---
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# --- Runtime state ---
+*.db
+*.sqlite
+*.sqlite3
+*.log
+claw.pid
+*.pid
+
+# --- Research / scratch (not part of the project) ---
+openclaw_research/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,87 @@
+# Claw configuration — Phase 4 milestone test
+
+[gateway]
+host = "127.0.0.1"
+port = 18789
+
+[session]
+dm_scope = "per-peer"
+max_messages = 200
+compaction_threshold = 40   # summarize when messages >= this
+compaction_keep_recent = 20 # keep this many after compaction
+
+[memory]
+enabled = true   # set false to disable memory tools and injection
+
+# ------------------------------------------------------------------
+# Agents
+# ------------------------------------------------------------------
+
+[[agents.list]]
+id = "main"
+name = "Claw"
+default = true
+
+[[agents.list]]
+id = "coder"
+name = "Claw Coder"
+
+[agents.list.model]
+primary = "claude-haiku-4-5-20251001"
+max_tokens = 2048
+
+# ------------------------------------------------------------------
+# Cron jobs
+# ------------------------------------------------------------------
+
+[[cron]]
+id = "heartbeat"
+agent_id = "main"
+prompt = "You are performing a periodic self-check. Respond with exactly: 'Heartbeat OK — [timestamp placeholder]'"
+cron = "0 8 * * *"
+delivery = "none"
+enabled = true
+
+# ------------------------------------------------------------------
+# AINDY integration (optional)
+# ------------------------------------------------------------------
+
+[aindy]
+enabled = false
+# url = "http://localhost:8000"
+# api_key = ""
+# emit_events = true
+
+# ------------------------------------------------------------------
+# Skills (empty — use bundled defaults)
+# ------------------------------------------------------------------
+
+[skills]
+
+# ------------------------------------------------------------------
+# Channels
+# ------------------------------------------------------------------
+
+[channels.webchat]
+enabled = true
+
+# Uncomment and fill in to enable channel adapters:
+
+# [channels.extra.telegram]
+# token = "BOT_TOKEN"
+
+# [channels.extra.discord]
+# token = "BOT_TOKEN"
+# guild_ids = []
+
+# [channels.extra.slack]
+# bot_token = "xoxb-..."
+# app_token = "xapp-..."
+
+# [channels.extra.matrix]
+# homeserver = "https://matrix.org"
+# user_id = "@bot:matrix.org"
+# access_token = "..."
+
+# [channels.extra.signal]
+# phone = "+15551234567"

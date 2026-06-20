@@ -1,0 +1,16 @@
+// Session reset workflow — triggered daily at 4 AM
+// Clears message history for all active sessions.
+// In Phase 5 this will be triggered by the cron scheduler.
+
+workflow "claw:session_reset" {
+  description = "Daily session reset — clears conversation history"
+
+  trigger {
+    cron "0 4 * * *"  // 4:00 AM daily
+  }
+
+  step "reset" {
+    log "Session reset: clearing all session message histories"
+    // TODO Phase 5: call session_manager.reset() for all active session keys
+  }
+}

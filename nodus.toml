@@ -1,0 +1,11 @@
+[project]
+name = "claw"
+version = "0.1.0"
+entry = "workflows/bootstrap.nd"
+
+[runtime]
+log_level = "info"
+state_dir = "~/.claw"
+
+[workflows]
+dir = "workflows"

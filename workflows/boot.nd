@@ -1,0 +1,11 @@
+// Boot workflow — runs once at gateway startup after all channels are connected.
+// Checks workspace, logs startup state, fires any pending deferred jobs.
+
+workflow "claw:boot" {
+  description = "Post-startup boot sequence"
+
+  step "log_ready" {
+    log "Claw gateway boot complete"
+    // TODO Phase 6: emit startup event to EventBus, trigger deferred jobs
+  }
+}

@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claw — WebChat</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f0f0f;
+    --surface: #1a1a1a;
+    --border: #2d2d2d;
+    --text: #e8e8e8;
+    --muted: #888;
+    --accent: #7c6af7;
+    --accent-dim: #5b4fd6;
+    --user-bg: #1e1e2e;
+    --ai-bg: #111;
+    --code-bg: #0a0a0a;
+    --radius: 10px;
+    --font: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); }
+  #app { display: flex; flex-direction: column; height: 100%; max-width: 760px; margin: 0 auto; }
+
+  /* Header */
+  header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  header .logo { font-size: 20px; }
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
+  header .status {
+    margin-left: auto;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #555;
+    transition: background 0.3s;
+  }
+  header .status.connected { background: #4ade80; }
+  header .status.error { background: #f87171; }
+
+  /* Messages */
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    scroll-behavior: smooth;
+  }
+  .msg { display: flex; flex-direction: column; max-width: 100%; }
+  .msg + .msg { margin-top: 10px; }
+
+  .msg-role {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 4px;
+    padding: 0 2px;
+  }
+  .msg.user .msg-role { color: var(--accent); }
+
+  .msg-body {
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border: 1px solid var(--border);
+  }
+  .msg.user .msg-body { background: var(--user-bg); }
+  .msg.assistant .msg-body { background: var(--ai-bg); }
+
+  /* Typing indicator */
+  .typing .msg-body::after {
+    content: '▋';
+    animation: blink 0.8s step-end infinite;
+    color: var(--accent);
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* Input area */
+  #input-area {
+    border-top: 1px solid var(--border);
+    padding: 14px 20px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+  }
+  #input {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    padding: 10px 14px;
+    resize: none;
+    outline: none;
+    min-height: 42px;
+    max-height: 160px;
+    transition: border-color 0.15s;
+    line-height: 1.5;
+  }
+  #input:focus { border-color: var(--accent); }
+  #input::placeholder { color: var(--muted); }
+  #send {
+    background: var(--accent);
+    border: none;
+    border-radius: var(--radius);
+    color: #fff;
+    cursor: pointer;
+    font-size: 18px;
+    width: 42px;
+    height: 42px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.15s, transform 0.1s;
+  }
+  #send:hover { background: var(--accent-dim); }
+  #send:active { transform: scale(0.94); }
+  #send:disabled { background: var(--border); cursor: not-allowed; transform: none; }
+
+  /* Scrollbar */
+  #messages::-webkit-scrollbar { width: 4px; }
+  #messages::-webkit-scrollbar-track { background: transparent; }
+  #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="logo">🦞</span>
+    <h1>Claw</h1>
+    <div class="status" id="status-dot"></div>
+  </header>
+  <div id="messages"></div>
+  <div id="input-area">
+    <textarea id="input" placeholder="Send a message…" rows="1"></textarea>
+    <button id="send" title="Send (Enter)">↑</button>
+  </div>
+</div>
+
+<script>
+const host = location.hostname;
+const port = location.port || (location.protocol === 'https:' ? 443 : 80);
+const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_URL = `${wsProto}//${host}:${port}/ws/chat`;
+
+const messagesEl = document.getElementById('messages');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+const statusDot = document.getElementById('status-dot');
+
+let ws = null;
+let currentAssistantEl = null;
+let reconnectDelay = 1000;
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    statusDot.className = 'status connected';
+    reconnectDelay = 1000;
+    sendBtn.disabled = false;
+  };
+
+  ws.onclose = () => {
+    statusDot.className = 'status error';
+    sendBtn.disabled = true;
+    currentAssistantEl = null;
+    setTimeout(() => {
+      reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
+      connect();
+    }, reconnectDelay);
+  };
+
+  ws.onerror = () => {
+    statusDot.className = 'status error';
+  };
+
+  ws.onmessage = (evt) => {
+    let frame;
+    try { frame = JSON.parse(evt.data); } catch { return; }
+
+    switch (frame.type) {
+      case 'hello':
+        break;
+      case 'chunk':
+        if (!currentAssistantEl) {
+          currentAssistantEl = addMessage('assistant', '', true);
+        }
+        appendChunk(currentAssistantEl, frame.content);
+        break;
+      case 'done':
+        if (currentAssistantEl) {
+          currentAssistantEl.classList.remove('typing');
+        }
+        currentAssistantEl = null;
+        sendBtn.disabled = false;
+        break;
+      case 'message':
+        addMessage('assistant', frame.content);
+        sendBtn.disabled = false;
+        break;
+      case 'error':
+        addMessage('assistant', `⚠ ${frame.message || 'Unknown error'}`);
+        sendBtn.disabled = false;
+        currentAssistantEl = null;
+        break;
+    }
+  };
+}
+
+function addMessage(role, content, isTyping = false) {
+  const wrap = document.createElement('div');
+  wrap.className = `msg ${role}${isTyping ? ' typing' : ''}`;
+
+  const roleEl = document.createElement('div');
+  roleEl.className = 'msg-role';
+  roleEl.textContent = role === 'user' ? 'You' : 'Claw';
+
+  const bodyEl = document.createElement('div');
+  bodyEl.className = 'msg-body';
+  bodyEl.textContent = content;
+
+  wrap.appendChild(roleEl);
+  wrap.appendChild(bodyEl);
+  messagesEl.appendChild(wrap);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return wrap;
+}
+
+function appendChunk(msgEl, chunk) {
+  const bodyEl = msgEl.querySelector('.msg-body');
+  bodyEl.textContent += chunk;
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function send() {
+  const content = inputEl.value.trim();
+  if (!content || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+  addMessage('user', content);
+  ws.send(JSON.stringify({ type: 'chat', content }));
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+  sendBtn.disabled = true;
+
+  // Add typing placeholder immediately
+  currentAssistantEl = addMessage('assistant', '', true);
+}
+
+sendBtn.addEventListener('click', send);
+
+inputEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
+});
+
+connect();
+</script>
+</body>
+</html>

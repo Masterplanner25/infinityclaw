@@ -1,0 +1,11 @@
+// Heartbeat workflow — runs on each cron tick to check system health.
+// In Phase 4 this is invoked by CronManager; registered via claw.toml cron block.
+
+workflow "claw:heartbeat" {
+  description = "Periodic heartbeat — checks agent and channel health"
+
+  step "check" {
+    log "Heartbeat tick"
+    // TODO Phase 6: emit health metrics, check channel connectivity
+  }
+}

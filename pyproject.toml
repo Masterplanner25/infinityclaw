@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "claw"
+version = "0.1.0"
+description = "Nodus-native personal AI assistant"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.111.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "websockets>=14.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
+    "aiofiles>=24.0",
+    "nodus-agent>=0.1.0",
+    "nodus-llm>=0.1.0",
+    "nodus-session>=0.1.0",
+    "nodus-events>=0.1.0",
+    "nodus-channels>=0.1.0",
+    "nodus-adapter-base>=0.1.0",
+    "nodus-gateway>=0.1.0",
+    "nodus-protocol>=0.1.0",
+    "nodus-router>=0.1.0",
+    "nodus-delivery>=0.1.0",
+    "nodus-observability-framework>=0.1.0",
+    "nodus-retry>=0.1.0",
+    "nodus-circuit-breaker>=0.1.0",
+    "nodus-governance>=0.1.0",
+    "nodus-extensions>=0.1.0",
+    "nodus-memory>=0.1.0",
+    "nodus-mcp>=0.1.0",
+    "nodus-sdk>=0.1.0",
+]
+
+[project.scripts]
+claw = "claw.cli:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["claw*", "claw_webchat*"]

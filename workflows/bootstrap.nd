@@ -1,0 +1,12 @@
+// Claw bootstrap workflow — loaded by `nodus run`
+// For Phase 3 the gateway is started via `python -m claw` or `claw start`.
+// This workflow exists as the nodus.toml entry point and can be extended
+// in later phases to add Nodus-native scheduled jobs and event handlers.
+
+workflow "claw:bootstrap" {
+  description = "Claw gateway bootstrap"
+
+  step "info" {
+    log "Claw bootstrap workflow loaded. Start the gateway with: python -m claw"
+  }
+}
