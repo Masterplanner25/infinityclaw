@@ -120,7 +120,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 - **Cross-agent memory**: `cross_agent_memory = ["agentA"]` on `[[agents.list]]` causes `_run_turn` to also recall memories from `agentA`'s namespace (up to 3 per source agent).
 - **Per-agent skill gating**: `capabilities.skill_use.allow/deny` on `[[agents.list]]` is applied as a second `SkillGate` pass after the global gate. `["*"]` in the allow list means "all skills" (wildcard).
 - `HandoffResult.success` is `False` when response starts with `"[error:"`. Caller sees the error string in `.error`.
-- Cross-workspace tool access (`ws_*` tools calling another agent's workspace) is Phase 9+.
+- Cross-workspace tool access: pass `target_agent_id` on list/create tools; ID-based tools (`ws_get_document`, `ws_update_task`) check permissions implicitly via the object's `workspace_id`.
 
 ### Knowledge watcher (`claw/knowledge/watcher.py`)
 - `KnowledgeWatcher.watch(agents)` is a background coroutine started in `ClawGateway.startup()` when knowledge is enabled.
@@ -169,7 +169,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | `WorkspaceScanner` scope | Scans top-level of workspace dir only (non-recursive). Excludes `ALL_WORKSPACE_FILES` and files with unsupported extensions. |
 | `WorkspaceStore` home workspace | Each agent's home workspace uses `id == agent_id`. `create_workspace()` uses `INSERT OR IGNORE` — safe to call twice. Use `ensure_workspace()` on manager to get-or-create. |
 | `WorkspaceStore` upsert by name | `upsert_document()` matches on `(workspace_id, name)` — same name replaces body. The original `id` is preserved (returned in result). |
-| Workspace tools scope | `ws_*` tools always operate on the calling agent's home workspace (`_agent_id` injected by `scoped_executor`). Cross-workspace access is Phase 9+. |
+| Workspace tools scope | By default `ws_*` tools operate on the calling agent's home workspace. Pass `target_agent_id` on `ws_create_task`, `ws_list_tasks`, `ws_create_document`, `ws_list_documents` to access another agent's workspace (requires an explicit permission grant). `ws_get_document` and `ws_update_task` infer the workspace from the object ID and check permission automatically. |
 | `WorkspaceConfig.db_path` | `":memory:"` for tests (same pattern as `MemoryConfig`). Empty string → `~/.claw/workspace.db`. |
 | `CapabilitySet` import in schema.py | `schema.py` imports `CapabilitySet` from `claw.permissions.model`. This is safe: `permissions/model.py` only imports pydantic. No circular dependency. |
 | `PermissionEnforcer` is per-turn | The enforcer is created fresh in `_run_turn` from the current agent config — not stored on the gateway. Capabilities can change without restart if config is reloaded. |
@@ -231,4 +231,4 @@ workspace/              Agent workspace placeholder (.gitkeep)
 - Phase 7: Permissions layer — `claw/permissions/` package, `CapabilitySet` config model on `AgentConfig`, `PermissionEnforcer` (tool allow/deny, HTTP enforcement, private network block)
 - Phase 8: Multi-agent coordination — `claw/coordination/` package, `AgentDispatcher`, `delegate_to_agent` tool, `run_agent_turn()`, per-agent skill gating (`skill_use`), cross-agent memory recall
 
-Phase 9+ (session-persistent delegation, distributed Weave, cross-workspace tool access) are on the roadmap.
+Phase 9 (cross-workspace tool access) is complete. Phase 10+ (session-persistent delegation, distributed Weave) are on the roadmap.

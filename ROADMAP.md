@@ -128,9 +128,27 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 
 ---
 
+### Phase 9 — Cross-Workspace Tool Access
+*Agents operate on each other's workspaces with permission*
+
+**Capabilities unlocked:**
+- One agent can read or write another agent's workspace documents and tasks
+- Permission model enforced at the tool level: read vs. write grants distinct access levels
+- ID-based tools (`ws_get_document`, `ws_update_task`) automatically enforce permissions via the object's workspace ownership
+- `target_agent_id` parameter on list/create tools selects the target workspace
+
+**Work (complete):**
+- `claw/workspace/tools.py` — all 6 `ws_*` tools updated with cross-workspace support:
+  - `ws_create_task`, `ws_list_tasks`, `ws_create_document`, `ws_list_documents`: optional `target_agent_id` param; `can_write`/`can_read` checked when target differs from caller
+  - `ws_update_task`, `ws_get_document`: look up object first, enforce `can_write`/`can_read` if `workspace_id != calling_agent`
+- All results include `workspace_id` field
+- `tests/test_aindy_phase9.py` — 30 checks, 18 pytest-collected tests
+
+---
+
 ## Planned
 
-### Phase 9 — Distributed Workspaces
+### Phase 10 — Distributed Workspaces
 *Workspaces span multiple Claw instances across the Weave*
 
 **Capabilities unlocked:**
