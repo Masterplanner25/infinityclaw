@@ -27,6 +27,7 @@ class AgentConfig(BaseModel):
     agent_dir: str = ""  # resolved to ~/.claw/agents/<id> if empty
     default: bool = False
     capabilities: Optional[CapabilitySet] = None
+    cross_agent_memory: list[str] = Field(default_factory=list)  # agent IDs whose memories to also read
 
     @field_validator("name", mode="before")
     @classmethod
@@ -158,6 +159,10 @@ class AINDYConfig(BaseModel):
     mounted: bool = False       # True when Claw is registered inside the AINDY platform layer
 
 
+class CoordinationConfig(BaseModel):
+    enabled: bool = False  # register delegate_to_agent tool; enable agent handoff
+
+
 class CronJobConfig(BaseModel):
     id: str = ""
     agent_id: str = "main"
@@ -182,6 +187,7 @@ class ClawConfig(BaseModel):
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     aindy: AINDYConfig = Field(default_factory=AINDYConfig)
+    coordination: CoordinationConfig = Field(default_factory=CoordinationConfig)
     cron: list[CronJobConfig] = Field(default_factory=list)
     state_dir: str = "~/.claw"
     log_level: str = "info"

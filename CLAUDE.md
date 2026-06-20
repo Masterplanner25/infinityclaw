@@ -7,7 +7,7 @@
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
 - Python: 3.11+ (venv at `C:\dev\claw\venv`)
-- Tests: `pytest tests/ -q` → 100/100 (never break this baseline)
+- Tests: `pytest tests/ -q` → 114/114 (never break this baseline)
 
 ## How to run
 
@@ -29,7 +29,7 @@ claw/gateway/server.py   ClawGateway + build_app()
   ├── ClawSessionManager asyncio.Lock per session key; compaction + pruning
   ├── ChannelAdapterRegistry  WebChat + external adapters
   ├── BindingResolver    channel/peer → agent_id routing
-  ├── SkillLoader/Gate   file-based skills with allow/deny
+  ├── SkillLoader/Gate   file-based skills with global allow/deny
   ├── MemoryManager      SQLite recall + injection
   ├── ToolRegistry       shared tool defs; scoped_executor enforces permissions + injects agent_id
   ├── CronManager        APScheduler cron jobs
@@ -40,6 +40,7 @@ claw/gateway/server.py   ClawGateway + build_app()
   ├── KnowledgeWatcher   watchfiles-based background task; auto-reindexes on change (optional)
   ├── WorkspaceStore     SQLite workspace object store (optional)
   ├── WorkspaceManager   async wrapper; Documents, Tasks, Assets, Permissions per agent
+  ├── AgentDispatcher    stateless inner-turn dispatch for agent delegation (optional)
   └── _AsyncAINDYClient  optional AINDY bridge (claw/aindy/client.py)
   [per-turn, not stored on gateway]
   └── PermissionEnforcer built fresh each _run_turn from agent_cfg.capabilities
@@ -54,14 +55,15 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 ### Turn pipeline (`_run_turn` in server.py)
 1. Detect `is_new_session` (empty history check — must happen **before** appending the user message)
 2. Generate `execution_unit_id = str(uuid.uuid4())` — threads through memory writes, AINDY events, tool calls
-3. Load workspace files + skills + recall memories + retrieve knowledge chunks (if enabled)
-4. Build system prompt via `PromptContext` (order: identity files → runtime → boot files → memories → knowledge → skills)
-5. Append user message; compact if needed; prune
-6. Fire AINDY events: `claw.session.started` if new session, `sys.v1.claw.turn.start` (both fire-and-forget, skipped if AINDY disabled)
-7. Build `PermissionEnforcer(agent_cfg.capabilities)`; call `filter_tool_definitions()` to remove denied tools from the list passed to the LLM
-8. `await turn.run(...)` via `scoped_executor` which: (a) calls `enforcer.check_tool_call()` — returns JSON error on `PermissionDenied`; (b) injects `agent_id` + `execution_unit_id` for memory/workspace tools; streams chunks to WebChat or collects for other channels
-9. Append assistant message; deliver response
-10. Fire AINDY `turn.complete` or `turn.error` event
+3. Load workspace files + skills; apply global `SkillGate`, then per-agent `SkillGate` from `capabilities.skill_use`
+4. Recall memories (own agent); also recall from `cross_agent_memory` agents (up to 3 each) if configured
+5. Retrieve knowledge chunks (if enabled); build system prompt via `PromptContext`
+6. Append user message; compact if needed; prune
+7. Fire AINDY events: `claw.session.started` if new session, `sys.v1.claw.turn.start` (both fire-and-forget, skipped if AINDY disabled)
+8. Build `PermissionEnforcer(agent_cfg.capabilities)`; call `filter_tool_definitions()` to remove denied tools from the list passed to the LLM
+9. `await turn.run(...)` via `scoped_executor` which: (a) calls `enforcer.check_tool_call()` — returns JSON error on `PermissionDenied`; (b) injects `agent_id` + `execution_unit_id` for memory/workspace/coordination tools; streams chunks to WebChat or collects for other channels
+10. Append assistant message; deliver response
+11. Fire AINDY `turn.complete` or `turn.error` event
 
 ### Session management
 - `asyncio.Lock` per session key — **not** `nodus_queue`. Sessions are serialized per-key, concurrent across different keys.
@@ -108,6 +110,17 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 - `external_http.allowlist`: empty = any public URL; non-empty = URL must start with one of the entries.
 - `external_http.denylist`: URL must not contain any entry.
 - `filesystem.paths`: when set, resolved path must fall within one entry (for future absolute-path tools; workspace-scoped tools are always permitted).
+
+### Multi-agent coordination (`claw/coordination/`)
+- **Enabled** via `[coordination] enabled = true` in `claw.toml`. Disabled by default.
+- `AgentDispatcher.dispatch(HandoffRequest)` — runs a stateless inner turn on the target agent via `ClawGateway.run_agent_turn()`. No session history, no channel delivery.
+- `run_agent_turn(agent_id, prompt, context="")` on `ClawGateway` — builds the target agent's full system prompt (workspace + skills + memories + knowledge), runs one turn, returns response text. Returns `"[error: ...]"` on failure.
+- `delegate_to_agent` tool: LLM calls with `agent_id` (target) + `prompt` + optional `context`. `_agent_id` (calling agent) injected by `scoped_executor`. Registered in `startup()` when `coordination.enabled = true`.
+- `is_coordination_tool(name)` — returns True for `delegate_to_agent`; used by `scoped_executor` injection check.
+- **Cross-agent memory**: `cross_agent_memory = ["agentA"]` on `[[agents.list]]` causes `_run_turn` to also recall memories from `agentA`'s namespace (up to 3 per source agent).
+- **Per-agent skill gating**: `capabilities.skill_use.allow/deny` on `[[agents.list]]` is applied as a second `SkillGate` pass after the global gate. `["*"]` in the allow list means "all skills" (wildcard).
+- `HandoffResult.success` is `False` when response starts with `"[error:"`. Caller sees the error string in `.error`.
+- Cross-workspace tool access (`ws_*` tools calling another agent's workspace) is Phase 9+.
 
 ### Knowledge watcher (`claw/knowledge/watcher.py`)
 - `KnowledgeWatcher.watch(agents)` is a background coroutine started in `ClawGateway.startup()` when knowledge is enabled.
@@ -164,14 +177,17 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | Private network block is unconditional | `browser_fetch` always blocks RFC-1918 + loopback regardless of `external_http` config. There is no config switch to allow private network access. |
 | `PermissionDenied` returns JSON error | `scoped_executor` catches `PermissionDenied` and returns `json.dumps({"error": "permission denied: ..."})` — the LLM sees a tool result, not an exception. |
 | `KnowledgeWatcher` uses `_listener_tasks` | The watcher asyncio task is stored in `_listener_tasks["knowledge-watcher"]` so it is automatically cancelled by `shutdown()` with all other listener tasks. |
-| `skill_use` capability not wired | `CapabilitySet.skill_use` (`SkillPermission`) is defined in the model but not enforced. Skill gating still uses the global `[skills] allow/deny` config via `SkillGate`. Wire `agent_cfg.capabilities.skill_use` into `SkillGate` in Phase 8+. |
+| `skill_use` capability wired (Phase 8) | `CapabilitySet.skill_use.allow/deny` is now applied as a second `SkillGate` pass in `_run_turn` after the global gate. `SkillGate` treats `["*"]` in allow as "all skills" (wildcard); empty allow also means all. |
 | `filesystem.paths` only active when `fs.read/write = True` | `_check_filesystem` early-returns (allows) when `fs.read = False` — workspace tools always pass through. Path-scope validation only runs when read/write is explicitly `True` AND paths are set. This means `filesystem.paths` has no effect on current workspace-scoped tools; it is reserved for future absolute-path tools. |
+| `delegate_to_agent` is stateless | `run_agent_turn()` passes a fresh single-message history — no session state. The target agent starts from scratch each delegation. Session-persistent delegation is Phase 9+. |
+| `is_coordination_tool` must be imported in scoped_executor | `_run_turn` imports `is_coordination_tool` inline (same as `is_memory_tool`/`is_workspace_tool`) to inject `_agent_id` for `delegate_to_agent`. Without this injection the handler receives no `_agent_id` and `from_agent` defaults to `"unknown"`. |
 
 ## Package layout
 
 ```
 claw/                   core package
 claw/aindy/             AINDY bridge: client.py, memory_store.py, app_registration.py
+claw/coordination/      Multi-agent coordination: model.py, dispatcher.py, tools.py
 claw/knowledge/         Knowledge layer: ingestion.py, index.py, retrieval.py, injector.py, scanner.py, watcher.py
 claw/permissions/       Permissions layer: model.py, enforcer.py
 claw/workspace/         Workspace layer: model.py, store.py, manager.py, tools.py, bootstrapper.py, initializer.py
@@ -183,7 +199,7 @@ claw_slack/             Slack adapter
 claw_telegram/          Telegram adapter
 claw_webchat/           Built-in browser UI + WebSocket adapter
 workflows/              Nodus DSL scripts (.nd)
-tests/                  Milestone test suites (100/100)
+tests/                  Milestone test suites (114/114)
 skills/                 User skill files (empty by default)
 workspace/              Agent workspace placeholder (.gitkeep)
 ```
@@ -204,7 +220,7 @@ workspace/              Agent workspace placeholder (.gitkeep)
 
 `CLAW_AINDY_INTEGRATION_PLAN.md` in the repo root is the authoritative phase-by-phase migration plan.
 
-**Phases 1–7 are complete (including Phase 6 follow-ons):**
+**Phases 1–8 are complete (including Phase 6 follow-ons):**
 - Phase 1: SDK wiring + lifespan + turn lifecycle events
 - Phase 2: AINDY memory backend (`AINDYMemoryStore`, `_aindy_or_local`, `memory_backend` config)
 - Phase 3: Execution tracking — `execution_unit_id` per turn, `claw.session.*` / `claw.memory.written` / `claw.cron.executed` events
@@ -213,5 +229,6 @@ workspace/              Agent workspace placeholder (.gitkeep)
 - Phase 6: Workspace objects — `WorkspaceStore`, `WorkspaceManager`, Documents/Tasks/Assets/Permissions, 6 agent tools, CLI `create`/`list`/`share`
 - Phase 6 follow-ons: `KnowledgeWatcher` — `watchfiles`-based background auto-reindex on workspace file changes
 - Phase 7: Permissions layer — `claw/permissions/` package, `CapabilitySet` config model on `AgentConfig`, `PermissionEnforcer` (tool allow/deny, HTTP enforcement, private network block)
+- Phase 8: Multi-agent coordination — `claw/coordination/` package, `AgentDispatcher`, `delegate_to_agent` tool, `run_agent_turn()`, per-agent skill gating (`skill_use`), cross-agent memory recall
 
-Phases 8+ (multi-agent coordination, distributed Weave) are on the roadmap.
+Phase 9+ (session-persistent delegation, distributed Weave, cross-workspace tool access) are on the roadmap.

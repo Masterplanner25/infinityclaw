@@ -142,6 +142,9 @@ class ClawGateway:
         # Tool registry (shared across agents; per-agent isolation in Phase 4.9)
         self.tool_registry = ToolRegistry()
 
+        # Coordination — optional multi-agent dispatcher (set in startup)
+        self.agent_dispatcher: Optional["AgentDispatcher"] = None
+
         # Cron scheduler (set in startup if cron jobs configured)
         self.cron_manager: Optional["CronManager"] = None
 
@@ -240,6 +243,14 @@ class ClawGateway:
             if not isinstance(adapter, WebChatAdapter):
                 self._start_listener(adapter)
 
+        # Coordination — delegation tool (optional; requires coordination.enabled = true)
+        if self.config.coordination.enabled:
+            from claw.coordination.dispatcher import AgentDispatcher
+            from claw.coordination.tools import register_delegation_tool
+            self.agent_dispatcher = AgentDispatcher(self)
+            register_delegation_tool(self.tool_registry, self.agent_dispatcher)
+            logger.info("[gateway] coordination delegation tool registered")
+
         # Cron manager
         try:
             from claw.cron.manager import CronManager
@@ -268,6 +279,86 @@ class ClawGateway:
             await self.cron_manager.shutdown()
 
         await self.channel_registry.disconnect_all()
+
+    async def run_agent_turn(
+        self, agent_id: str, prompt: str, context: str = ""
+    ) -> str:
+        """Run a single stateless turn for agent_id and return the response text.
+
+        Used by the delegation tool — no session history, no channel delivery.
+        Returns a string beginning with "[error:" on failure.
+        """
+        turn = self.agent_registry.get_turn(agent_id)
+        if turn is None:
+            return f"[error: no agent '{agent_id}']"
+
+        agent_cfg = self.agent_registry.get_agent_config(agent_id)
+        full_prompt = f"{context}\n\n{prompt}".strip() if context else prompt
+
+        workspace_files = self.workspace_bootstrapper.load(agent_id)
+        skills = self.skill_gate.filter(self.skill_loader.load(agent_id=agent_id))
+        if agent_cfg and agent_cfg.capabilities:
+            _asg = SkillGate(
+                allow=agent_cfg.capabilities.skill_use.allow,
+                deny=agent_cfg.capabilities.skill_use.deny,
+            )
+            skills = _asg.filter(skills)
+        skills_block = self.skills_injector.build_block(skills)
+
+        memories = await self.memory_manager.recall(agent_id, full_prompt, limit=5)
+        memories_block = self.memory_injector.build_block(memories)
+
+        knowledge_block = ""
+        if self.knowledge_retriever is not None and self.knowledge_injector is not None:
+            chunks = await self.knowledge_retriever.retrieve(
+                query=full_prompt, workspace_id=agent_id
+            )
+            knowledge_block = self.knowledge_injector.build_block(chunks)
+
+        prompt_ctx = PromptContext(
+            agent_id=agent_id,
+            agent_name=agent_cfg.name if agent_cfg else agent_id,
+            workspace_files=workspace_files,
+            skills_block=skills_block,
+            memories_block=memories_block,
+            knowledge_block=knowledge_block,
+        )
+        system_prompt = self.agent_registry.get_prompt_builder().build(prompt_ctx)
+
+        execution_unit_id = str(uuid.uuid4())
+        _enforcer = PermissionEnforcer(agent_cfg.capabilities if agent_cfg else None)
+        _all_defs = self.tool_registry.definitions()
+        _tool_defs = _enforcer.filter_tool_definitions(_all_defs) if _all_defs else None
+
+        from claw.memory.tools import is_memory_tool
+        from claw.workspace.tools import is_workspace_tool
+        from claw.coordination.tools import is_coordination_tool
+        _base_exec = self.tool_registry.executor()
+
+        async def _inner_exec(name: str, inp: dict):
+            try:
+                _enforcer.check_tool_call(name, inp)
+            except PermissionDenied as _exc:
+                import json as _json
+                return _json.dumps({"error": f"permission denied: {_exc}"})
+            if is_memory_tool(name) or is_workspace_tool(name) or is_coordination_tool(name):
+                inp = {"_agent_id": agent_id, "_execution_unit_id": execution_unit_id, **inp}
+            return await _base_exec(name, inp)
+
+        try:
+            result = await turn.run(
+                messages=[{"role": "user", "content": full_prompt}],
+                system=system_prompt,
+                tools=_tool_defs or None,
+                on_chunk=None,
+                tool_executor=_inner_exec,
+                max_tokens=self.config.agents.defaults.model.max_tokens,
+                temperature=self.config.agents.defaults.model.temperature,
+            )
+            return result["content"]
+        except Exception as exc:
+            logger.error("[gateway] inner turn error agent=%s: %s", agent_id, exc)
+            return f"[error: {exc}]"
 
     def register_adapter(self, adapter: BaseChannelAdapter) -> None:
         """Register a channel adapter and start its listener (if already started)."""
@@ -353,9 +444,21 @@ class ClawGateway:
         # Workspace + skills + memory + system prompt
         workspace_files = self.workspace_bootstrapper.load(agent_id)
         skills = self.skill_gate.filter(self.skill_loader.load(agent_id=agent_id))
+        # Per-agent skill filter from capabilities.skill_use
+        if agent_cfg and agent_cfg.capabilities:
+            _agent_sg = SkillGate(
+                allow=agent_cfg.capabilities.skill_use.allow,
+                deny=agent_cfg.capabilities.skill_use.deny,
+            )
+            skills = _agent_sg.filter(skills)
         skills_block = self.skills_injector.build_block(skills)
 
         memories = await self.memory_manager.recall(agent_id, envelope.content, limit=5)
+        # Cross-agent memory recall — opt-in per agent via cross_agent_memory config
+        if agent_cfg and agent_cfg.cross_agent_memory:
+            for _xid in agent_cfg.cross_agent_memory:
+                _xmems = await self.memory_manager.recall(_xid, envelope.content, limit=3)
+                memories.extend(_xmems)
         memories_block = self.memory_injector.build_block(memories)
 
         knowledge_block = ""
@@ -396,6 +499,7 @@ class ClawGateway:
         # execution_unit_id into memory and workspace tool inputs.
         from claw.memory.tools import is_memory_tool
         from claw.workspace.tools import is_workspace_tool
+        from claw.coordination.tools import is_coordination_tool
         _base_exec = self.tool_registry.executor()
 
         async def scoped_executor(name: str, inp: dict):
@@ -404,7 +508,7 @@ class ClawGateway:
             except PermissionDenied as _exc:
                 import json as _json
                 return _json.dumps({"error": f"permission denied: {_exc}"})
-            if is_memory_tool(name) or is_workspace_tool(name):
+            if is_memory_tool(name) or is_workspace_tool(name) or is_coordination_tool(name):
                 inp = {
                     "_agent_id": agent_id,
                     "_execution_unit_id": execution_unit_id,

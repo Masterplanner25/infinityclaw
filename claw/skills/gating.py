@@ -21,7 +21,7 @@ class SkillGate:
         for skill in skills:
             if skill.id in self._deny:
                 continue
-            if self._allow and skill.id not in self._allow:
+            if self._allow and "*" not in self._allow and skill.id not in self._allow:
                 continue
             result.append(skill)
         return result
