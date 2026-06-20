@@ -7,7 +7,7 @@
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
 - Python: 3.11+ (venv at `C:\dev\claw\venv`)
-- Tests: `pytest tests/ -q` → 145/145 (never break this baseline)
+- Tests: `pytest tests/ -q` → 156/156 (never break this baseline)
 
 ## How to run
 
@@ -113,7 +113,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 
 ### Multi-agent coordination (`claw/coordination/`)
 - **Enabled** via `[coordination] enabled = true` in `claw.toml`. Disabled by default.
-- `AgentDispatcher.dispatch(HandoffRequest)` — runs an inner turn on the target agent via `ClawGateway.run_agent_turn()`. Session-persistent when `HandoffRequest.session_key` is set; stateless otherwise. No channel delivery.
+- `AgentDispatcher.dispatch(HandoffRequest)` — runs an inner turn on the target agent via `ClawGateway.run_agent_turn()`. Session-persistent when `HandoffRequest.session_key` is set; stateless otherwise. No channel delivery. Emits `claw.delegation.started` / `claw.delegation.complete` / `claw.delegation.error` AINDY events (fire-and-forget) when `_aindy` is set and `emit_events=True`. Unknown-agent short-circuit returns error immediately with no events fired.
 - `run_agent_turn(agent_id, prompt, context="", session_key="")` on `ClawGateway` — builds the target agent's full system prompt (workspace + skills + memories + knowledge), runs one turn, returns response text. When `session_key` is provided, uses `ClawSessionManager` (lock + compact + prune pipeline) so history accumulates across calls. When empty, stateless (Phase 8 behavior). Returns `"[error: ...]"` on failure.
 - `delegate_to_agent` tool: LLM calls with `agent_id` (target) + `prompt` + optional `context`. `_agent_id` and `_session_key` (calling agent + caller session) injected by `scoped_executor`. Handler derives delegation key `delegate:{from}:{caller_session}:{to}` and passes it as `HandoffRequest.session_key`. Registered in `startup()` when `coordination.enabled = true`.
 - `is_coordination_tool(name)` — returns True for `delegate_to_agent`; used by `scoped_executor` injection check.
@@ -181,6 +181,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | `delegate_to_agent` session persistence | `scoped_executor` injects `_session_key` (the caller's session key) alongside `_agent_id`. The handler derives `delegate:{from}:{caller_session}:{to}` and passes it as `HandoffRequest.session_key` → `run_agent_turn()`. When `_session_key` is empty (no caller session), delegation remains stateless. |
 | `run_agent_turn` session branch | When `session_key` is non-empty, the method acquires `lock_for(session_key)`, appends user message, runs compact + prune, calls `turn.run(messages=...)` with history, then appends the assistant response. Outside the lock, stateless path passes `[{"role": "user", ...}]` only. |
 | `is_coordination_tool` must be imported in scoped_executor | `_run_turn` imports `is_coordination_tool` inline (same as `is_memory_tool`/`is_workspace_tool`) to inject `_agent_id` + `_session_key` for `delegate_to_agent`. Without this injection the handler receives no `_agent_id` and `from_agent` defaults to `"unknown"`. |
+| Delegation audit events (Phase 11) | `AgentDispatcher` fires `claw.delegation.started`, `claw.delegation.complete`, `claw.delegation.error` via `asyncio.create_task` (fire-and-forget, same pattern as turn events in `server.py`). Unknown-agent path fires no events. `delegation_id` UUID ties started/complete/error together in the AINDY audit log. `_emit_event` helper in `dispatcher.py` swallows all exceptions — AINDY unavailability never blocks a delegation. |
 
 ## Package layout
 
@@ -232,5 +233,6 @@ workspace/              Agent workspace placeholder (.gitkeep)
 - Phase 8: Multi-agent coordination — `claw/coordination/` package, `AgentDispatcher`, `delegate_to_agent` tool, `run_agent_turn()`, per-agent skill gating (`skill_use`), cross-agent memory recall
 - Phase 9: Cross-workspace tool access — `target_agent_id` on `ws_*` list/create tools; implicit permission check on `ws_get_document`/`ws_update_task` via object `workspace_id`
 - Phase 10: Session-persistent delegation — `run_agent_turn(session_key=...)`, delegation session key derivation in `delegate_to_agent` handler, `_session_key` injection in `scoped_executor` and `_inner_exec`, `HandoffRequest.session_key` field
+- Phase 11: Delegation audit trail — `AgentDispatcher` emits `claw.delegation.started` / `claw.delegation.complete` / `claw.delegation.error` via `asyncio.create_task` (fire-and-forget); `delegation_id` UUID per dispatch for correlation; `persistent` flag in payload
 
-Phase 11+ (AINDY event-bus audit trail for delegate_to_agent, distributed Weave) are on the roadmap.
+Phase 12+ (distributed Weave) are on the roadmap.

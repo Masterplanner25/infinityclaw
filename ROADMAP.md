@@ -161,9 +161,26 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 
 ---
 
+### Phase 11 — Delegation Audit Trail ✅
+*Cross-agent handoffs visible in the AINDY audit log alongside turns and memory writes*
+
+**Problem solved:** `delegate_to_agent` previously fired no AINDY events — cross-agent handoffs were invisible in the audit log.
+
+**What was built:**
+- `_emit_event(client, event_type, payload)` module-level helper in `dispatcher.py` — same fire-and-forget pattern as `_emit_aindy` in `server.py`; swallows all exceptions
+- `delegation_id = str(uuid.uuid4())` generated per `dispatch()` call for log correlation
+- `claw.delegation.started` — fired before `run_agent_turn` for known agents; payload: `{from_agent, to_agent, delegation_id, persistent, session_key?}`
+- `claw.delegation.complete` — fired on success; adds `response_len`
+- `claw.delegation.error` — fired when `run_agent_turn` returns an `[error:...]` string; adds `error` (truncated to 200 chars)
+- Unknown-agent short-circuit returns error immediately with **no events** (no delegation was started)
+- Gated behind `self._gw._aindy and self._gw.config.aindy.emit_events` — same as all other AINDY events
+- `tests/test_aindy_phase11.py` — 33 checks, 11 pytest-collected functions
+
+---
+
 ## Planned
 
-### Phase 11 — Distributed Workspaces
+### Phase 12 — Distributed Workspaces
 *Workspaces span multiple Claw instances across the Weave*
 
 **Capabilities unlocked:**
