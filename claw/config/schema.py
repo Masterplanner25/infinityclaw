@@ -133,6 +133,14 @@ class MemoryConfig(BaseModel):
     db_path: str = ""  # defaults to ~/.claw/memory.db
 
 
+class KnowledgeConfig(BaseModel):
+    enabled: bool = False
+    db_path: str = ""    # defaults to ~/.claw/knowledge.db
+    chunk_size: int = 500
+    chunk_overlap: int = 50
+    top_k: int = 5
+
+
 class AINDYConfig(BaseModel):
     enabled: bool = False
     url: str = "http://localhost:8000"
@@ -164,6 +172,7 @@ class ClawConfig(BaseModel):
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     aindy: AINDYConfig = Field(default_factory=AINDYConfig)
     cron: list[CronJobConfig] = Field(default_factory=list)
     state_dir: str = "~/.claw"

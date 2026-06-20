@@ -35,6 +35,9 @@ from claw.tools.registry import ToolRegistry
 from claw.tools.standard import register_standard_tools
 from claw.workspace.bootstrapper import WorkspaceBootstrapper
 from claw.workspace.initializer import WorkspaceInitializer
+from claw.knowledge.index import KnowledgeIndex
+from claw.knowledge.retrieval import KnowledgeRetriever
+from claw.knowledge.injector import KnowledgeInjector
 from claw_webchat.adapter import WebChatAdapter
 from .auth import GatewayAuth
 
@@ -101,6 +104,22 @@ class ClawGateway:
         )
         self.memory_injector = MemoryInjector()
 
+        # Knowledge index (optional; None when disabled)
+        if config.knowledge.enabled:
+            _knowledge_db = (
+                config.knowledge.db_path
+                or str(self._state_dir / "knowledge.db")
+            )
+            self.knowledge_index: Optional[KnowledgeIndex] = KnowledgeIndex(_knowledge_db)
+            self.knowledge_retriever: Optional[KnowledgeRetriever] = KnowledgeRetriever(
+                self.knowledge_index, top_k=config.knowledge.top_k
+            )
+            self.knowledge_injector: Optional[KnowledgeInjector] = KnowledgeInjector()
+        else:
+            self.knowledge_index = None
+            self.knowledge_retriever = None
+            self.knowledge_injector = None
+
         # WebChat (always registered)
         self.webchat_adapter = WebChatAdapter()
         self.channel_registry.register(self.webchat_adapter)
@@ -132,6 +151,31 @@ class ClawGateway:
         for agent_cfg in agents:
             ws_dir = self.workspace_initializer.initialize(agent_cfg.id)
             logger.info("[gateway] agent=%s workspace=%s", agent_cfg.id, ws_dir)
+
+        # Knowledge startup scan — index workspace files for each agent
+        if self.knowledge_index is not None:
+            from claw.knowledge.scanner import WorkspaceScanner
+            from claw.knowledge.ingestion import ingest_file
+            scanner = WorkspaceScanner()
+            for agent_cfg in agents:
+                ws_dir = self._state_dir / "agents" / agent_cfg.id / "workspace"
+                files = scanner.scan(ws_dir)
+                total = 0
+                for path in files:
+                    chunks = ingest_file(
+                        path,
+                        workspace_id=agent_cfg.id,
+                        chunk_size=self.config.knowledge.chunk_size,
+                        chunk_overlap=self.config.knowledge.chunk_overlap,
+                    )
+                    if chunks:
+                        self.knowledge_index.clear_source(str(path), agent_cfg.id)
+                        self.knowledge_index.upsert_many(chunks)
+                        total += len(chunks)
+                logger.info(
+                    "[knowledge] indexed agent=%s files=%d chunks=%d",
+                    agent_cfg.id, len(files), total,
+                )
 
         # Standard tools
         default_agent = agents[0] if agents else None
@@ -276,12 +320,21 @@ class ClawGateway:
         memories = await self.memory_manager.recall(agent_id, envelope.content, limit=5)
         memories_block = self.memory_injector.build_block(memories)
 
+        knowledge_block = ""
+        if self.knowledge_retriever is not None and self.knowledge_injector is not None:
+            knowledge_chunks = await self.knowledge_retriever.retrieve(
+                query=envelope.content,
+                workspace_id=agent_id,
+            )
+            knowledge_block = self.knowledge_injector.build_block(knowledge_chunks)
+
         prompt_ctx = PromptContext(
             agent_id=agent_id,
             agent_name=agent_cfg.name if agent_cfg else agent_id,
             workspace_files=workspace_files,
             skills_block=skills_block,
             memories_block=memories_block,
+            knowledge_block=knowledge_block,
         )
         system_prompt = self.agent_registry.get_prompt_builder().build(prompt_ctx)
 

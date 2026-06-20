@@ -43,6 +43,13 @@ def main() -> None:
     p_ag_add.add_argument("--model", default="claude-sonnet-4-6")
     p_ag_add.add_argument("--default", action="store_true")
 
+    # workspace
+    p_workspace = sub.add_parser("workspace", help="Manage workspace files")
+    ws_sub = p_workspace.add_subparsers(dest="workspace_cmd")
+    p_ws_index = ws_sub.add_parser("index", help="Index workspace files for knowledge retrieval")
+    p_ws_index.add_argument("--agent", default="", dest="agent_id", metavar="ID",
+                            help="Agent to index (default: all agents)")
+
     # cron
     p_cron = sub.add_parser("cron", help="Manage cron jobs")
     cron_sub = p_cron.add_subparsers(dest="cron_cmd")
@@ -81,6 +88,8 @@ def main() -> None:
         _cmd_status(args)
     elif command == "agents":
         _cmd_agents(args)
+    elif command == "workspace":
+        _cmd_workspace(args)
     elif command == "cron":
         _cmd_cron(args)
     else:
@@ -413,6 +422,62 @@ def _cmd_agents(args) -> None:
         print(f'default = {str(new_agent.default).lower()}')
         print(f'[agents.list.model]')
         print(f'primary = "{new_agent.model.primary}"')
+
+
+def _cmd_workspace(args) -> None:
+    from claw.config.loader import load_config
+    config = load_config(getattr(args, "config", None))
+    cmd = getattr(args, "workspace_cmd", "index") or "index"
+
+    if cmd == "index":
+        if not config.knowledge.enabled:
+            print("Knowledge layer is disabled.")
+            print("Set [knowledge] enabled = true in claw.toml to enable it.")
+            sys.exit(1)
+
+        from pathlib import Path
+        from claw.knowledge.index import KnowledgeIndex
+        from claw.knowledge.scanner import WorkspaceScanner
+        from claw.knowledge.ingestion import ingest_file
+
+        state_dir = Path(config.state_dir).expanduser()
+        db_path = config.knowledge.db_path or str(state_dir / "knowledge.db")
+        idx = KnowledgeIndex(db_path)
+        scanner = WorkspaceScanner()
+
+        agents = config.agents.agents or []
+        agent_id_filter = getattr(args, "agent_id", "")
+        targets = [a.id for a in agents if not agent_id_filter or a.id == agent_id_filter]
+
+        if not targets:
+            print(f"No agent found with id={agent_id_filter!r}")
+            idx.close()
+            sys.exit(1)
+
+        for agent_id in targets:
+            ws_dir = state_dir / "agents" / agent_id / "workspace"
+            if not ws_dir.exists():
+                print(f"  [SKIP] {agent_id}: workspace not found at {ws_dir}")
+                continue
+            files = scanner.scan(ws_dir)
+            total_chunks = 0
+            for path in files:
+                chunks = ingest_file(
+                    path,
+                    workspace_id=agent_id,
+                    chunk_size=config.knowledge.chunk_size,
+                    chunk_overlap=config.knowledge.chunk_overlap,
+                )
+                if chunks:
+                    idx.clear_source(str(path), agent_id)
+                    idx.upsert_many(chunks)
+                    total_chunks += len(chunks)
+                    print(f"  [OK] [{agent_id}] {path.name}: {len(chunks)} chunk(s)")
+                else:
+                    print(f"  [SKIP] [{agent_id}] {path.name}: no content extracted")
+            print(f"  Total [{agent_id}]: {len(files)} file(s), {total_chunks} chunk(s) indexed")
+
+        idx.close()
 
 
 def _cmd_cron(args) -> None:

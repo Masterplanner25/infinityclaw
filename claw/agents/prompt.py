@@ -15,7 +15,8 @@ class PromptContext:
     workspace_files: dict[str, str] = field(default_factory=dict)
     skills_block: str = ""
     tools_block: str = ""
-    memories_block: str = ""   # injected by MemoryInjector before each turn
+    memories_block: str = ""    # injected by MemoryInjector before each turn
+    knowledge_block: str = ""   # injected by KnowledgeInjector before each turn
     extra_sections: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -55,6 +56,10 @@ class SystemPromptBuilder:
         # Relevant memories (recalled before the turn)
         if ctx.memories_block:
             sections.append(ctx.memories_block)
+
+        # Relevant knowledge chunks (retrieved before the turn)
+        if ctx.knowledge_block:
+            sections.append(ctx.knowledge_block)
 
         # Skills
         if ctx.skills_block:

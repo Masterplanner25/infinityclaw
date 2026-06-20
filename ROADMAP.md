@@ -45,26 +45,29 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 - `GatewayAuth(bypass=True)` for mounted mode — AINDY platform layer handles auth
 - `claw/aindy/app_registration.py` — `register_claw_app()` async entry point for AINDY platform
 
----
-
-## Planned
-
 ### Phase 5 — Knowledge Layer
 *Workspace files become indexed, retrievable knowledge*
 
 **Capabilities unlocked:**
-- Ingest documents (Markdown, PDF, plaintext, HTML, code) into a vector index
-- Retrieve relevant chunks at turn time instead of injecting all files verbatim
-- Support workspaces with 100s of documents without context window pressure
-- File watcher: auto-reindex on workspace changes
+- Ingest documents (Markdown, plaintext, HTML, code, CSV) into a keyword index
+- Retrieve relevant chunks at turn time; only relevant content injected into context
+- Support workspaces with many documents without context window pressure
+- On-demand reindex: `claw workspace index [--agent ID]`
 
-**Work:**
-- `claw/knowledge/ingestion.py` — parsing, chunking, embedding pipeline
-- `claw/knowledge/index.py` — AINDY MAS vector index + local sqlite-vec fallback
-- `claw/knowledge/retrieval.py` — semantic search at turn time
-- Replace verbatim file injection in `PromptContext` with retrieval-based injection
+**Work (complete):**
+- `claw/knowledge/ingestion.py` — `Chunk` dataclass, `parse_file()`, `chunk_text()`, `ingest_file()`
+- `claw/knowledge/index.py` — `KnowledgeIndex`: two-table SQLite FTS5 schema, BM25 ranked search
+- `claw/knowledge/retrieval.py` — `KnowledgeRetriever`: async wrapper (`asyncio.to_thread`)
+- `claw/knowledge/injector.py` — `KnowledgeInjector`: formats `## Relevant Knowledge` prompt section
+- `claw/knowledge/scanner.py` — `WorkspaceScanner`: finds indexable files, excludes identity/boot files
+- `PromptContext.knowledge_block` field; injected after memories, before skills
+- `KnowledgeConfig` in `ClawConfig`; startup scan on `ClawGateway.startup()`
 - `claw workspace index` CLI command
-- `WORKSPACE_SPEC.md` collections and relationships (initial graph model)
+- `tests/test_aindy_phase5.py` — 38 checks, 12 pytest-collected tests
+
+---
+
+## Planned
 
 ### Phase 6 — Workspace as First-Class Object
 *Workspaces become explicit, shareable, multi-agent containers*

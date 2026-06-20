@@ -7,7 +7,7 @@
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
 - Python: 3.11+ (venv at `C:\dev\claw\venv`)
-- Tests: `pytest tests/ -q` → 60/60 (never break this baseline)
+- Tests: `pytest tests/ -q` → 72/72 (never break this baseline)
 
 ## How to run
 
@@ -30,6 +30,8 @@ claw/gateway/server.py   ClawGateway + build_app()
   ├── ToolRegistry       shared tool defs; scoped_executor injects agent_id
   ├── CronManager        APScheduler cron jobs
   ├── AuthManager        JWT issuance + SqliteApiKeyStore
+  ├── KnowledgeIndex     SQLite FTS5 workspace knowledge index (optional)
+  ├── KnowledgeRetriever async retrieval wrapper; top-K chunks per turn
   └── _AsyncAINDYClient  optional AINDY bridge (claw/aindy/client.py)
 ```
 
@@ -61,6 +63,17 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 - **`MemoryManager` public methods are async**: `remember()`, `recall()`, `list_all()`, `get()`, `forget()` all `await`. Only `feedback()` remains sync. In async tests use `await`; in sync tests use `asyncio.run()`.
 - `AINDYMemoryStore` is **not** a `MemoryStore` implementor. It is async-native and called directly by `MemoryManager`. The `MemoryStore` protocol is for local SQLite only.
 - Memory backend is set via `[aindy] memory_backend`: `"local"` (SQLite only), `"aindy"` (AINDY MAS, raises on failure), `"aindy-fallback"` (AINDY with automatic SQLite fallback).
+
+### Knowledge layer (`claw/knowledge/`)
+- **Enabled** via `[knowledge] enabled = true` in `claw.toml`. Disabled by default.
+- `WorkspaceScanner` finds files in the agent workspace directory that are NOT in `ALL_WORKSPACE_FILES` (identity/boot files) and have a supported extension.
+- `ingest_file(path, workspace_id, chunk_size, chunk_overlap)` parses + chunks a file into `Chunk` objects (UUID chunk_id generated fresh each call).
+- `KnowledgeIndex` — two-table SQLite schema: `knowledge_chunks` (metadata + `fts_rowid` FK) + `knowledge_fts` (FTS5 virtual table). `clear_source()` deletes FTS5 entries by rowid before deleting from base table.
+- `KnowledgeRetriever.retrieve()` is async (wraps `index.search()` via `asyncio.to_thread`). FTS5 query uses OR of extracted words; rank is BM25 (lower/more negative = better match).
+- `KnowledgeInjector.build_block()` formats a `## Relevant Knowledge` section for the system prompt.
+- Startup scan: on `ClawGateway.startup()`, all workspace files (per agent) are scanned and indexed.
+- `claw workspace index [--agent ID]` CLI command re-indexes on demand.
+- `PromptContext.knowledge_block` injected between memories and skills in `SystemPromptBuilder`.
 
 ### AINDY bridge (`claw/aindy/client.py`)
 - `_AsyncAINDYClient` wraps `aindy_sdk.AINDYClient` (sync, stdlib urllib) via `asyncio.to_thread()`.
@@ -95,12 +108,17 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | `_IncludedRouter` has no `.path` | `app.include_router()` wraps routes in `_IncludedRouter` which has no `.path` attribute. To collect all route paths: recursively walk `r.original_router.routes` for any route where `getattr(r, 'path', None) is None`. |
 | Windows `→` encoding | The `→` character causes `UnicodeEncodeError` (cp1252) in print statements on Windows. Use `->` in all print/log strings. |
 | `→` in test output | Same cp1252 issue applies in test scripts. Use `replace_all=True` to fix all occurrences at once. |
+| FTS5 DELETE | FTS5 virtual tables support `DELETE FROM fts WHERE rowid = ?` but NOT `DELETE WHERE col = ?` for non-rowid columns. Store `fts_rowid` in the base table and delete by rowid. |
+| FTS5 rank ordering | `ORDER BY rank` in FTS5 returns best matches first (rank is BM25, negative values; more negative = better match). |
+| `ingest_file()` UUIDs | Each call to `ingest_file()` generates fresh `chunk_id` UUIDs. Always call `clear_source()` before re-ingesting a file to avoid phantom FTS5 entries. |
+| `WorkspaceScanner` scope | Scans top-level of workspace dir only (non-recursive). Excludes `ALL_WORKSPACE_FILES` and files with unsupported extensions. |
 
 ## Package layout
 
 ```
 claw/                   core package
 claw/aindy/             AINDY bridge: client.py, memory_store.py, app_registration.py
+claw/knowledge/         Knowledge layer: ingestion.py, index.py, retrieval.py, injector.py, scanner.py
 claw/gateway/server.py  ClawGateway + build_app() + _build_claw_router()
 claw_discord/           Discord adapter
 claw_matrix/            Matrix adapter
@@ -130,10 +148,11 @@ workspace/              Agent workspace placeholder (.gitkeep)
 
 `CLAW_AINDY_INTEGRATION_PLAN.md` in the repo root is the authoritative phase-by-phase migration plan.
 
-**Phases 1–4 are complete:**
+**Phases 1–5 are complete:**
 - Phase 1: SDK wiring + lifespan + turn lifecycle events
 - Phase 2: AINDY memory backend (`AINDYMemoryStore`, `_aindy_or_local`, `memory_backend` config)
 - Phase 3: Execution tracking — `execution_unit_id` per turn, `claw.session.*` / `claw.memory.written` / `claw.cron.executed` events
 - Phase 4: Gateway mount — `_build_claw_router()`, `build_app()` dual-mode, `GatewayAuth(bypass=True)`, `register_claw_app()`
+- Phase 5: Knowledge layer — `claw/knowledge/` package, SQLite FTS5 index, workspace scanner, retriever, injector, `claw workspace index` CLI
 
-Phases 5+ (syscall routing, full kernel handoff) are on the roadmap.
+Phases 6+ (workspace as first-class object, permissions, multi-agent, distributed Weave) are on the roadmap.
