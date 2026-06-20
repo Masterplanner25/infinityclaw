@@ -106,6 +106,7 @@ class MemoryManager:
         node_type: str = _DEFAULT_NODE_TYPE,
         memory_type: str = _DEFAULT_MEMORY_TYPE,
         source: Optional[str] = None,
+        execution_unit_id: Optional[str] = None,
     ) -> MemoryNode:
         """Store a new memory node and return it."""
         if not self._enabled:
@@ -115,6 +116,9 @@ class MemoryManager:
         memory_type = memory_type if memory_type in VALID_MEMORY_TYPES else _DEFAULT_MEMORY_TYPE
 
         node_id = str(uuid.uuid4())
+        extra: dict = {}
+        if execution_unit_id:
+            extra["execution_unit_id"] = execution_unit_id
         node = MemoryNode(
             id=node_id,
             content=content,
@@ -125,6 +129,7 @@ class MemoryManager:
             path=build_path("claw", _NAMESPACE, memory_type, node_id),
             namespace=_NAMESPACE,
             source=source,
+            extra=extra,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )

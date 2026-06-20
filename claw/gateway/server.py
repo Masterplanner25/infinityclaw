@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -257,6 +259,10 @@ class ClawGateway:
 
     async def _run_turn(self, agent_id, session_key, envelope, turn, peer_id) -> None:
         agent_cfg = self.agent_registry.get_agent_config(agent_id)
+        execution_unit_id = str(uuid.uuid4())
+
+        # Detect new session before appending user message
+        is_new_session = len(self.session_manager.get_messages(session_key)) == 0
 
         # Workspace + skills + memory + system prompt
         workspace_files = self.workspace_bootstrapper.load(agent_id)
@@ -288,19 +294,32 @@ class ClawGateway:
             if is_webchat:
                 await self.webchat_adapter.stream_chunk(peer_id, chunk)
 
-        # Scoped executor: injects agent_id into memory tool inputs so handlers
-        # know which agent's store to use without the LLM having to pass it.
+        # Scoped executor: injects agent_id + execution_unit_id into memory tool
+        # inputs so handlers know which agent's store to use and can tag the write.
         from claw.memory.tools import is_memory_tool
         _base_exec = self.tool_registry.executor()
 
         async def scoped_executor(name: str, inp: dict):
             if is_memory_tool(name):
-                inp = {"_agent_id": agent_id, **inp}
+                inp = {
+                    "_agent_id": agent_id,
+                    "_execution_unit_id": execution_unit_id,
+                    **inp,
+                }
             return await _base_exec(name, inp)
 
         if self._aindy and self.config.aindy.emit_events:
+            if is_new_session:
+                asyncio.create_task(_emit_aindy(self._aindy, "claw.session.started", {
+                    "agent_id": agent_id,
+                    "session_key": session_key,
+                    "channel": envelope.channel_id,
+                    "execution_unit_id": execution_unit_id,
+                }))
             asyncio.create_task(_emit_aindy(self._aindy, "sys.v1.claw.turn.start", {
-                "agent_id": agent_id, "session_key": session_key,
+                "agent_id": agent_id,
+                "session_key": session_key,
+                "execution_unit_id": execution_unit_id,
             }))
 
         try:
@@ -317,7 +336,9 @@ class ClawGateway:
 
             if self._aindy and self.config.aindy.emit_events:
                 asyncio.create_task(_emit_aindy(self._aindy, "sys.v1.claw.turn.complete", {
-                    "agent_id": agent_id, "session_key": session_key,
+                    "agent_id": agent_id,
+                    "session_key": session_key,
+                    "execution_unit_id": execution_unit_id,
                     "response_len": len(result["content"]),
                 }))
 
@@ -336,7 +357,9 @@ class ClawGateway:
             logger.error("[gateway] turn error agent=%s: %s", agent_id, exc)
             if self._aindy and self.config.aindy.emit_events:
                 asyncio.create_task(_emit_aindy(self._aindy, "sys.v1.claw.turn.error", {
-                    "agent_id": agent_id, "session_key": session_key,
+                    "agent_id": agent_id,
+                    "session_key": session_key,
+                    "execution_unit_id": execution_unit_id,
                     "error": str(exc)[:200],
                 }))
             if is_webchat:
@@ -408,13 +431,34 @@ def build_app(config: ClawConfig) -> tuple[FastAPI, ClawGateway]:
         await gateway.auth.verify_ws(websocket, token)
         await websocket.accept()
 
+        _t0 = time.monotonic()
+        _session_info: dict = {}
+
         async def on_message(envelope: InboundEnvelope) -> None:
+            if not _session_info:
+                agent_id = gateway.resolver.resolve(envelope)
+                _session_info["agent_id"] = agent_id
+                _session_info["session_key"] = gateway.session_key_builder.build(
+                    agent_id=agent_id,
+                    channel_id=envelope.channel_id,
+                    peer_id=envelope.peer_id,
+                )
             await gateway.handle_inbound(envelope, peer_id=envelope.peer_id)
 
         await gateway.webchat_adapter.handle_ws_connection(
             websocket,
             on_message=on_message,
         )
+
+        # WebSocket closed — emit session.ended if AINDY is active
+        if _session_info and gateway._aindy and gateway.config.aindy.emit_events:
+            duration_ms = int((time.monotonic() - _t0) * 1000)
+            asyncio.create_task(_emit_aindy(gateway._aindy, "claw.session.ended", {
+                "agent_id": _session_info.get("agent_id", ""),
+                "session_key": _session_info.get("session_key", ""),
+                "duration_ms": duration_ms,
+                "channel": "webchat",
+            }))
 
     # Control-plane WS (Phase 3 stub; full nodus_protocol in Phase 3.9)
     @app.websocket("/ws")

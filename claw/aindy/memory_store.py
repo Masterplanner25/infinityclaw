@@ -7,6 +7,7 @@ methods directly, bypassing the sync MemoryStore protocol used by local backends
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -19,6 +20,13 @@ if TYPE_CHECKING:
     from claw.aindy.client import _AsyncAINDYClient
 
 logger = logging.getLogger(__name__)
+
+
+async def _fire_event(client: "_AsyncAINDYClient", event_type: str, payload: dict) -> None:
+    try:
+        await client.emit_event(event_type, payload)
+    except Exception as exc:
+        logger.debug("[aindy_memory] event skipped %s: %s", event_type, exc)
 
 _NAMESPACE = "claw"
 
@@ -68,6 +76,12 @@ class AINDYMemoryStore:
             tags=node.tags,
             node_id=node.id,
         )
+        asyncio.create_task(_fire_event(self._client, "claw.memory.written", {
+            "agent_id": node.user_id,
+            "node_id": node.id,
+            "path": path,
+            "execution_unit_id": (node.extra or {}).get("execution_unit_id"),
+        }))
         return node
 
     async def search(

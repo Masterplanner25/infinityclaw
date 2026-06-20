@@ -16,6 +16,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+async def _fire_aindy_event(client, event_type: str, payload: dict) -> None:
+    try:
+        await client.emit_event(event_type, payload)
+    except Exception as exc:
+        logger.debug("[cron] AINDY event skipped %s: %s", event_type, exc)
+
+
+async def _fire_aindy_job(client, task_name: str, payload: dict) -> None:
+    try:
+        await client.submit_job(task_name, payload)
+    except Exception as exc:
+        logger.debug("[cron] AINDY job submit skipped task=%s: %s", task_name, exc)
+
+
 class DeliveryMode(str, Enum):
     ANNOUNCE = "announce"   # send result to the agent's main session
     WEBHOOK = "webhook"     # POST result to a URL
@@ -140,6 +154,19 @@ class CronManager:
         job.last_run = datetime.datetime.now().isoformat()
         logger.info("[cron] running job=%s agent=%s", job.id, job.agent_id)
 
+        execution_unit_id = str(uuid.uuid4())
+        aindy = self._gateway._aindy
+        emit = aindy is not None and self._gateway.config.aindy.emit_events
+
+        # Register this run in the AINDY AutomationLog (fire-and-forget)
+        if emit:
+            asyncio.create_task(_fire_aindy_job(aindy, "claw.cron", {
+                "job_id": job.id,
+                "agent_id": job.agent_id,
+                "delivery": job.delivery.value,
+                "execution_unit_id": execution_unit_id,
+            }))
+
         turn = self._gateway.agent_registry.get_turn(job.agent_id)
         if turn is None:
             logger.error("[cron] no turn for agent=%s", job.agent_id)
@@ -165,6 +192,14 @@ class CronManager:
                 tool_executor=self._gateway.tool_registry.executor(),
             )
             response = result.get("content", "")
+            if emit:
+                asyncio.create_task(_fire_aindy_event(aindy, "claw.cron.executed", {
+                    "job_id": job.id,
+                    "agent_id": job.agent_id,
+                    "delivery": job.delivery.value,
+                    "execution_unit_id": execution_unit_id,
+                    "response_len": len(response),
+                }))
             await self._deliver(job, response)
         except Exception as exc:
             logger.error("[cron] job=%s run error: %s", job.id, exc)

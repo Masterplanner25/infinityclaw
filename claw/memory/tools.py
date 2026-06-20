@@ -125,6 +125,7 @@ def is_memory_tool(name: str) -> bool:
 def _make_remember_handler(memory_manager: "MemoryManager"):
     async def handler(input: dict) -> str:
         agent_id = input.get("_agent_id", "main")
+        execution_unit_id = input.get("_execution_unit_id")
         content = input.get("content", "").strip()
         if not content:
             return json.dumps({"error": "content is required"})
@@ -133,6 +134,7 @@ def _make_remember_handler(memory_manager: "MemoryManager"):
         try:
             node = await memory_manager.remember(
                 agent_id, content, tags=tags, memory_type=memory_type,
+                execution_unit_id=execution_unit_id,
             )
             return json.dumps({
                 "id": node.id,
