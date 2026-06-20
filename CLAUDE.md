@@ -7,7 +7,7 @@
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
 - Python: 3.11+ (venv at `C:\dev\claw\venv`)
-- Tests: `pytest tests/ -q` → 114/114 (never break this baseline)
+- Tests: `pytest tests/ -q` → 132/132 (never break this baseline)
 
 ## How to run
 
@@ -94,7 +94,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 - `WorkspaceManager` — async wrapper via `asyncio.to_thread`. Each agent gets a home workspace with `id == agent_id`, created via `ensure_workspace()` (idempotent).
 - Objects: `Workspace`, `Document`, `Task` (status: open/in_progress/done/cancelled), `Asset`, `WorkspacePermission` (level: none/read/write).
 - **Permissions**: owner always has full read/write; other agents need an explicit grant via `set_permission()`. `can_read()` and `can_write()` are async.
-- **Tools** (`claw/workspace/tools.py`): `ws_create_task`, `ws_list_tasks`, `ws_update_task`, `ws_create_document`, `ws_list_documents`, `ws_get_document`. Registered via `register_workspace_tools()` in `startup()`. Agent_id injected by `scoped_executor` (LLM never sees it).
+- **Tools** (`claw/workspace/tools.py`): `ws_create_task`, `ws_list_tasks`, `ws_update_task`, `ws_create_document`, `ws_list_documents`, `ws_get_document`. Registered via `register_workspace_tools()` in `startup()`. Agent_id injected by `scoped_executor` (LLM never sees it). Pass `target_agent_id` on list/create tools for cross-workspace access (requires explicit permission); ID-based tools (`ws_get_document`, `ws_update_task`) enforce permissions automatically via the object's `workspace_id`.
 - Startup: `ensure_workspace(agent_id)` called for each agent so the home workspace exists before tools run.
 - `WorkspaceConfig.db_path = ":memory:"` for tests.
 - CLI: `claw workspace create <name>`, `claw workspace list`, `claw workspace share <id> --agent <id> --perm <level>`
@@ -120,7 +120,6 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 - **Cross-agent memory**: `cross_agent_memory = ["agentA"]` on `[[agents.list]]` causes `_run_turn` to also recall memories from `agentA`'s namespace (up to 3 per source agent).
 - **Per-agent skill gating**: `capabilities.skill_use.allow/deny` on `[[agents.list]]` is applied as a second `SkillGate` pass after the global gate. `["*"]` in the allow list means "all skills" (wildcard).
 - `HandoffResult.success` is `False` when response starts with `"[error:"`. Caller sees the error string in `.error`.
-- Cross-workspace tool access: pass `target_agent_id` on list/create tools; ID-based tools (`ws_get_document`, `ws_update_task`) check permissions implicitly via the object's `workspace_id`.
 
 ### Knowledge watcher (`claw/knowledge/watcher.py`)
 - `KnowledgeWatcher.watch(agents)` is a background coroutine started in `ClawGateway.startup()` when knowledge is enabled.
@@ -179,7 +178,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | `KnowledgeWatcher` uses `_listener_tasks` | The watcher asyncio task is stored in `_listener_tasks["knowledge-watcher"]` so it is automatically cancelled by `shutdown()` with all other listener tasks. |
 | `skill_use` capability wired (Phase 8) | `CapabilitySet.skill_use.allow/deny` is now applied as a second `SkillGate` pass in `_run_turn` after the global gate. `SkillGate` treats `["*"]` in allow as "all skills" (wildcard); empty allow also means all. |
 | `filesystem.paths` only active when `fs.read/write = True` | `_check_filesystem` early-returns (allows) when `fs.read = False` — workspace tools always pass through. Path-scope validation only runs when read/write is explicitly `True` AND paths are set. This means `filesystem.paths` has no effect on current workspace-scoped tools; it is reserved for future absolute-path tools. |
-| `delegate_to_agent` is stateless | `run_agent_turn()` passes a fresh single-message history — no session state. The target agent starts from scratch each delegation. Session-persistent delegation is Phase 9+. |
+| `delegate_to_agent` is stateless | `run_agent_turn()` passes a fresh single-message history — no session state. The target agent starts from scratch each delegation. Session-persistent delegation is Phase 10+. |
 | `is_coordination_tool` must be imported in scoped_executor | `_run_turn` imports `is_coordination_tool` inline (same as `is_memory_tool`/`is_workspace_tool`) to inject `_agent_id` for `delegate_to_agent`. Without this injection the handler receives no `_agent_id` and `from_agent` defaults to `"unknown"`. |
 
 ## Package layout
@@ -199,7 +198,7 @@ claw_slack/             Slack adapter
 claw_telegram/          Telegram adapter
 claw_webchat/           Built-in browser UI + WebSocket adapter
 workflows/              Nodus DSL scripts (.nd)
-tests/                  Milestone test suites (114/114)
+tests/                  Milestone test suites (132/132)
 skills/                 User skill files (empty by default)
 workspace/              Agent workspace placeholder (.gitkeep)
 ```
@@ -220,7 +219,7 @@ workspace/              Agent workspace placeholder (.gitkeep)
 
 `CLAW_AINDY_INTEGRATION_PLAN.md` in the repo root is the authoritative phase-by-phase migration plan.
 
-**Phases 1–8 are complete (including Phase 6 follow-ons):**
+**Phases 1–9 are complete (including Phase 6 follow-ons):**
 - Phase 1: SDK wiring + lifespan + turn lifecycle events
 - Phase 2: AINDY memory backend (`AINDYMemoryStore`, `_aindy_or_local`, `memory_backend` config)
 - Phase 3: Execution tracking — `execution_unit_id` per turn, `claw.session.*` / `claw.memory.written` / `claw.cron.executed` events
@@ -230,5 +229,6 @@ workspace/              Agent workspace placeholder (.gitkeep)
 - Phase 6 follow-ons: `KnowledgeWatcher` — `watchfiles`-based background auto-reindex on workspace file changes
 - Phase 7: Permissions layer — `claw/permissions/` package, `CapabilitySet` config model on `AgentConfig`, `PermissionEnforcer` (tool allow/deny, HTTP enforcement, private network block)
 - Phase 8: Multi-agent coordination — `claw/coordination/` package, `AgentDispatcher`, `delegate_to_agent` tool, `run_agent_turn()`, per-agent skill gating (`skill_use`), cross-agent memory recall
+- Phase 9: Cross-workspace tool access — `target_agent_id` on `ws_*` list/create tools; implicit permission check on `ws_get_document`/`ws_update_task` via object `workspace_id`
 
-Phase 9 (cross-workspace tool access) is complete. Phase 10+ (session-persistent delegation, distributed Weave) are on the roadmap.
+Phase 10+ (session-persistent delegation, distributed Weave) are on the roadmap.
