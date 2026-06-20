@@ -83,26 +83,33 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 - `claw workspace create / list / share` CLI commands
 - `tests/test_aindy_phase6.py` — 73 checks, 12 pytest-collected tests
 
+### Phase 6 — Follow-Ons
+*Knowledge layer upgrades*
+
+**Work (complete):**
+- `claw/knowledge/watcher.py` — `KnowledgeWatcher`: background `watchfiles`-based watcher; auto-reindexes workspace files on create/modify/delete without requiring `claw workspace index`
+- `ClawGateway.startup()` launches watcher task (cancellable via `_listener_tasks["knowledge-watcher"]`); watcher gracefully exits if `watchfiles` is not installed
+
+### Phase 7 — Permissions and Filesystem Access
+*Tool calls are gated by explicit per-agent capability declarations*
+
+**Capabilities unlocked:**
+- Tool allowlist/denylist per agent enforced at runtime before the LLM call and at invocation time
+- Private network block for `browser_fetch` — always on; no config required
+- HTTP allowlist and denylist per agent for `browser_fetch`
+- Filesystem capability model declared in `claw.toml` per agent
+- Framework ready for absolute-path filesystem tools (Phase 8+)
+
+**Work (complete):**
+- `claw/permissions/model.py` — `CapabilitySet`, `FilesystemPermission`, `HttpPermission`, `ToolPermission`, `SkillPermission`
+- `claw/permissions/enforcer.py` — `PermissionDenied`, `PermissionEnforcer`: `filter_tool_definitions()` (strips denied tools from LLM tool list), `check_tool_call()` (enforces at invocation), `_is_private_host()` (RFC-1918 + loopback detection)
+- `claw/config/schema.py` — `AgentConfig.capabilities: Optional[CapabilitySet]`; import from `claw.permissions.model`
+- `claw/gateway/server.py` — `_run_turn` builds `PermissionEnforcer` from agent capabilities each turn; filters `tool_registry.definitions()` before passing to LLM; `scoped_executor` calls `check_tool_call` and returns `{"error": "permission denied: ..."}` on violation
+- `tests/test_aindy_phase7.py` — 37 checks, 16 pytest-collected tests
+
 ---
 
 ## Planned
-
-### Phase 7 — Permissions and Filesystem Access
-*Agents can access the real filesystem — safely*
-
-**Capabilities unlocked:**
-- Agents can read files outside the workspace directory (with explicit grant)
-- Write and delete access available under declared `paths`
-- Capability declaration in `claw.toml` per agent (full model from `PERMISSIONS_AND_SECURITY.md`)
-- Tool allowlist/denylist per agent enforced at runtime (not just skills)
-- Private network block for `browser_fetch`
-
-**Work:**
-- `claw/permissions/model.py` — `CapabilitySet`, `FilesystemPermission`, `HttpPermission`
-- `claw/permissions/enforcer.py` — validates tool calls against declared capabilities at invocation time
-- Path validation and traversal protection
-- URL denylist for internal networks
-- Config schema: `[agents.list.capabilities]`
 
 ### Phase 8 — Multi-Agent Coordination
 *Agents collaborate inside a workspace*

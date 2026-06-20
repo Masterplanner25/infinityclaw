@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from claw.permissions.model import CapabilitySet
 
 
 class GatewayConfig(BaseModel):
@@ -25,6 +26,7 @@ class AgentConfig(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     agent_dir: str = ""  # resolved to ~/.claw/agents/<id> if empty
     default: bool = False
+    capabilities: Optional[CapabilitySet] = None
 
     @field_validator("name", mode="before")
     @classmethod

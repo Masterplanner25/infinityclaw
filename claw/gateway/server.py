@@ -40,6 +40,7 @@ from claw.workspace.manager import WorkspaceManager
 from claw.knowledge.index import KnowledgeIndex
 from claw.knowledge.retrieval import KnowledgeRetriever
 from claw.knowledge.injector import KnowledgeInjector
+from claw.permissions.enforcer import PermissionDenied, PermissionEnforcer
 from claw_webchat.adapter import WebChatAdapter
 from .auth import GatewayAuth
 
@@ -217,6 +218,21 @@ class ClawGateway:
             register_workspace_tools(self.tool_registry, self.workspace_manager)
             logger.info("[gateway] workspace object tools registered")
 
+        # Knowledge file watcher — auto-reindex on workspace changes (Phase 6 follow-up)
+        if self.knowledge_index is not None:
+            from claw.knowledge.watcher import KnowledgeWatcher
+            _watcher = KnowledgeWatcher(
+                self.knowledge_index,
+                self.config.knowledge,
+                self._state_dir,
+            )
+            _watcher_task = asyncio.create_task(
+                _watcher.watch(agents),
+                name="knowledge-watcher",
+            )
+            self._listener_tasks["knowledge-watcher"] = _watcher_task
+            logger.info("[knowledge] file watcher started")
+
         await self.channel_registry.connect_all()
 
         # Start listener tasks for all non-WebChat adapters
@@ -373,13 +389,21 @@ class ClawGateway:
             if is_webchat:
                 await self.webchat_adapter.stream_chunk(peer_id, chunk)
 
-        # Scoped executor: injects agent_id + execution_unit_id into memory and
-        # workspace tool inputs so handlers know which agent's store to use.
+        # Per-agent permission enforcer — built from capabilities declared in config.
+        _enforcer = PermissionEnforcer(agent_cfg.capabilities if agent_cfg else None)
+
+        # Scoped executor: enforces permissions, then injects agent_id +
+        # execution_unit_id into memory and workspace tool inputs.
         from claw.memory.tools import is_memory_tool
         from claw.workspace.tools import is_workspace_tool
         _base_exec = self.tool_registry.executor()
 
         async def scoped_executor(name: str, inp: dict):
+            try:
+                _enforcer.check_tool_call(name, inp)
+            except PermissionDenied as _exc:
+                import json as _json
+                return _json.dumps({"error": f"permission denied: {_exc}"})
             if is_memory_tool(name) or is_workspace_tool(name):
                 inp = {
                     "_agent_id": agent_id,
@@ -402,11 +426,15 @@ class ClawGateway:
                 "execution_unit_id": execution_unit_id,
             }))
 
+        # Filter tool definitions through the per-agent capability policy.
+        _all_tool_defs = self.tool_registry.definitions()
+        _tool_defs = _enforcer.filter_tool_definitions(_all_tool_defs) if _all_tool_defs else None
+
         try:
             result = await turn.run(
                 messages=messages,
                 system=system_prompt,
-                tools=self.tool_registry.definitions() or None,
+                tools=_tool_defs or None,
                 on_chunk=on_chunk,
                 tool_executor=scoped_executor,
                 max_tokens=self.config.agents.defaults.model.max_tokens,

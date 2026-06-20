@@ -7,7 +7,7 @@
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
 - Python: 3.11+ (venv at `C:\dev\claw\venv`)
-- Tests: `pytest tests/ -q` → 84/84 (never break this baseline)
+- Tests: `pytest tests/ -q` → 100/100 (never break this baseline)
 
 ## How to run
 
@@ -37,8 +37,10 @@ claw/gateway/server.py   ClawGateway + build_app()
   ├── KnowledgeIndex     SQLite FTS5 workspace knowledge index (optional)
   ├── KnowledgeRetriever async retrieval wrapper; top-K chunks per turn
   ├── KnowledgeInjector  formats chunks into ## Relevant Knowledge prompt block
+  ├── KnowledgeWatcher   watchfiles-based background task; auto-reindexes on change (optional)
   ├── WorkspaceStore     SQLite workspace object store (optional)
   ├── WorkspaceManager   async wrapper; Documents, Tasks, Assets, Permissions per agent
+  ├── PermissionEnforcer per-turn capability enforcer; filters tool defs + checks calls
   └── _AsyncAINDYClient  optional AINDY bridge (claw/aindy/client.py)
 ```
 
@@ -93,6 +95,26 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 - `WorkspaceConfig.db_path = ":memory:"` for tests.
 - CLI: `claw workspace create <name>`, `claw workspace list`, `claw workspace share <id> --agent <id> --perm <level>`
 
+### Permissions layer (`claw/permissions/`)
+- **Always active** — `PermissionEnforcer` is created per turn in `_run_turn`; no config flag needed.
+- `CapabilitySet` (in `model.py`): `filesystem`, `external_http`, `tool_use`, `skill_use` — all fields default to open/unrestricted.
+- Declared per-agent in `claw.toml` as `capabilities = { tool_use = { deny = ["write_file"] }, ... }` on `[[agents.list]]`.
+- `AgentConfig.capabilities: Optional[CapabilitySet]` — `None` means full access (no restrictions).
+- `filter_tool_definitions(defs)` — strips denied/non-allowed tools from the LLM's tool list before the turn starts.
+- `check_tool_call(name, inp)` — called inside `scoped_executor` before every handler; raises `PermissionDenied` on violation; gateway returns `{"error": "permission denied: ..."}` to the LLM.
+- **Private network block** for `browser_fetch` is always on regardless of config: `localhost`, `127.x`, `10.x`, `192.168.x`, `172.16-31.x`, `::1`.
+- `external_http.allowlist`: empty = any public URL; non-empty = URL must start with one of the entries.
+- `external_http.denylist`: URL must not contain any entry.
+- `filesystem.paths`: when set, resolved path must fall within one entry (for future absolute-path tools; workspace-scoped tools are always permitted).
+
+### Knowledge watcher (`claw/knowledge/watcher.py`)
+- `KnowledgeWatcher.watch(agents)` is a background coroutine started in `ClawGateway.startup()` when knowledge is enabled.
+- Requires `watchfiles` (already in venv); exits gracefully with a log message if not installed.
+- On file create/modify: calls `clear_source()` then `ingest_file()` then `upsert_many()` — same pipeline as the startup scan.
+- On file delete: calls `clear_source()` only.
+- Excludes `ALL_WORKSPACE_FILES` (identity/boot docs) and unsupported extensions — same exclusion rules as `WorkspaceScanner`.
+- Cancelled via `_listener_tasks["knowledge-watcher"]` in `ClawGateway.shutdown()`.
+
 ### AINDY bridge (`claw/aindy/client.py`)
 - `_AsyncAINDYClient` wraps `aindy_sdk.AINDYClient` (sync, stdlib urllib) via `asyncio.to_thread()`.
 - Three gates prevent AINDY unavailability from ever blocking a turn:
@@ -134,13 +156,20 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | `WorkspaceStore` upsert by name | `upsert_document()` matches on `(workspace_id, name)` — same name replaces body. The original `id` is preserved (returned in result). |
 | Workspace tools scope | `ws_*` tools always operate on the calling agent's home workspace (`_agent_id` injected by `scoped_executor`). Cross-workspace access is Phase 8+. |
 | `WorkspaceConfig.db_path` | `":memory:"` for tests (same pattern as `MemoryConfig`). Empty string → `~/.claw/workspace.db`. |
+| `CapabilitySet` import in schema.py | `schema.py` imports `CapabilitySet` from `claw.permissions.model`. This is safe: `permissions/model.py` only imports pydantic. No circular dependency. |
+| `PermissionEnforcer` is per-turn | The enforcer is created fresh in `_run_turn` from the current agent config — not stored on the gateway. Capabilities can change without restart if config is reloaded. |
+| `filter_tool_definitions` before LLM | Always call this BEFORE `turn.run()` — the filtered list is what the LLM sees. Denied tools are not presented; the LLM can never request them. |
+| Private network block is unconditional | `browser_fetch` always blocks RFC-1918 + loopback regardless of `external_http` config. There is no config switch to allow private network access. |
+| `PermissionDenied` returns JSON error | `scoped_executor` catches `PermissionDenied` and returns `json.dumps({"error": "permission denied: ..."})` — the LLM sees a tool result, not an exception. |
+| `KnowledgeWatcher` uses `_listener_tasks` | The watcher asyncio task is stored in `_listener_tasks["knowledge-watcher"]` so it is automatically cancelled by `shutdown()` with all other listener tasks. |
 
 ## Package layout
 
 ```
 claw/                   core package
 claw/aindy/             AINDY bridge: client.py, memory_store.py, app_registration.py
-claw/knowledge/         Knowledge layer: ingestion.py, index.py, retrieval.py, injector.py, scanner.py
+claw/knowledge/         Knowledge layer: ingestion.py, index.py, retrieval.py, injector.py, scanner.py, watcher.py
+claw/permissions/       Permissions layer: model.py, enforcer.py
 claw/workspace/         Workspace layer: model.py, store.py, manager.py, tools.py, bootstrapper.py, initializer.py
 claw/gateway/server.py  ClawGateway + build_app() + _build_claw_router()
 claw_discord/           Discord adapter
@@ -171,12 +200,14 @@ workspace/              Agent workspace placeholder (.gitkeep)
 
 `CLAW_AINDY_INTEGRATION_PLAN.md` in the repo root is the authoritative phase-by-phase migration plan.
 
-**Phases 1–6 are complete:**
+**Phases 1–7 are complete (including Phase 6 follow-ons):**
 - Phase 1: SDK wiring + lifespan + turn lifecycle events
 - Phase 2: AINDY memory backend (`AINDYMemoryStore`, `_aindy_or_local`, `memory_backend` config)
 - Phase 3: Execution tracking — `execution_unit_id` per turn, `claw.session.*` / `claw.memory.written` / `claw.cron.executed` events
 - Phase 4: Gateway mount — `_build_claw_router()`, `build_app()` dual-mode, `GatewayAuth(bypass=True)`, `register_claw_app()`
 - Phase 5: Knowledge layer — `claw/knowledge/` package, SQLite FTS5 index, workspace scanner, retriever, injector, `claw workspace index` CLI
 - Phase 6: Workspace objects — `WorkspaceStore`, `WorkspaceManager`, Documents/Tasks/Assets/Permissions, 6 agent tools, CLI `create`/`list`/`share`
+- Phase 6 follow-ons: `KnowledgeWatcher` — `watchfiles`-based background auto-reindex on workspace file changes
+- Phase 7: Permissions layer — `claw/permissions/` package, `CapabilitySet` config model on `AgentConfig`, `PermissionEnforcer` (tool allow/deny, HTTP enforcement, private network block)
 
-Phases 7+ (filesystem permissions, multi-agent coordination, distributed Weave) are on the roadmap.
+Phases 8+ (multi-agent coordination, distributed Weave) are on the roadmap.
