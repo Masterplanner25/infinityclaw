@@ -42,6 +42,7 @@ The gateway is the coordination hub. It owns:
 - `BindingResolver` — channel + peer → agent_id routing
 - `SkillLoader` / `SkillGate` — file-based skills with allow/deny
 - `MemoryManager` — SQLite or AINDY MAS memory + recall injection
+- `KnowledgeIndex` / `KnowledgeRetriever` / `KnowledgeInjector` — FTS5 workspace knowledge (optional, Phase 5)
 - `ToolRegistry` — shared tool definitions; `scoped_executor` injects `agent_id` per turn
 - `CronManager` — APScheduler-backed cron jobs
 - `AuthManager` — JWT issuance + `SqliteApiKeyStore`
@@ -58,40 +59,41 @@ Each agent is a `ConversationalTurn` (Nodus-managed) wrapping a direct `anthropi
 **Turn pipeline:**
 
 ```
-1. Load workspace files + skills + memories
-2. Build system prompt (PromptContext)
-3. Append user message; compact if needed; prune
-4. Fire AINDY turn.start event (fire-and-forget)
-5. turn.run() → stream chunks to channel
-6. Append assistant response
-7. Fire AINDY turn.complete / turn.error event
+1. Detect is_new_session (before appending user message)
+2. Load workspace files + skills + recall memories + retrieve knowledge chunks
+3. Build system prompt (PromptContext: identity → runtime → boot → memories → knowledge → skills)
+4. Append user message; compact if needed; prune
+5. Fire AINDY session.started (if new) + turn.start events (fire-and-forget)
+6. turn.run() → stream chunks to channel
+7. Append assistant response
+8. Fire AINDY turn.complete / turn.error event
 ```
 
 Each turn carries an `execution_unit_id` (UUID) that threads through memory writes, AINDY events, and cron jobs — forming a complete audit trail.
 
 ---
 
-### Knowledge Layer *(Phase 5+)*
+### Knowledge Layer *(Phase 5 — complete)*
 
-The knowledge layer sits between the agent runtime and raw workspace files. It is responsible for transforming unstructured content into agent-retrievable structured knowledge.
+The knowledge layer sits between the agent runtime and raw workspace files. It indexes non-identity workspace content and retrieves only what is relevant to the current turn — preventing context window pressure as workspaces grow.
 
 ```
-File / Asset
+File / Asset (non-identity, supported extension)
     ↓
-Ingestion Pipeline
+WorkspaceScanner  ← excludes AGENTS.md, SOUL.md, etc.
     ↓
-Parsing + Chunking
+ingest_file()     ← parse_file() + chunk_text() (sliding window, configurable size/overlap)
     ↓
-Embedding
+KnowledgeIndex    ← SQLite FTS5: knowledge_chunks (metadata) + knowledge_fts (BM25 index)
     ↓
-Knowledge Index (AINDY MAS / vector store)
+KnowledgeRetriever.retrieve()  ← async, OR-joined FTS5 query, top-K by BM25 rank
     ↓
-Retrieval (semantic search, graph traversal)
-    ↓
-Agent Context Injection
+KnowledgeInjector.build_block()  ← ## Relevant Knowledge section in system prompt
 ```
 
-Until Phase 5, workspace files are injected directly into the system prompt at turn time. The knowledge layer generalizes this into a proper retrieval pipeline.
+Identity/boot files (AGENTS.md, SOUL.md, IDENTITY.md, USER.md, TOOLS.md, HEARTBEAT.md, BOOT.md, BOOTSTRAP.md) remain verbatim-injected by `WorkspaceBootstrapper`. The knowledge layer covers everything else.
+
+Enabled via `[knowledge] enabled = true` in `claw.toml`. Startup scan indexes all agents' workspaces on `ClawGateway.startup()`. On-demand reindex: `claw workspace index [--agent ID]`.
 
 ---
 
@@ -147,6 +149,7 @@ User → Telegram
     → session_key = "telegram:main:123"
     → async with session_lock[session_key]:
         → MemoryManager.recall()
+        → KnowledgeRetriever.retrieve()  (if knowledge enabled)
         → SkillsInjector.inject()
         → PromptContext.build()
         → ConversationalTurn.run()

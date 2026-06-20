@@ -15,6 +15,7 @@
 venv\Scripts\python.exe -m claw start          # gateway at http://127.0.0.1:18789/
 venv\Scripts\python.exe -m pytest tests/ -q    # test suite
 venv\Scripts\python.exe -m claw doctor         # subsystem health check
+venv\Scripts\python.exe -m claw workspace index  # re-index workspace files (requires knowledge.enabled = true)
 ```
 
 ## Architecture overview
@@ -32,6 +33,7 @@ claw/gateway/server.py   ClawGateway + build_app()
   ├── AuthManager        JWT issuance + SqliteApiKeyStore
   ├── KnowledgeIndex     SQLite FTS5 workspace knowledge index (optional)
   ├── KnowledgeRetriever async retrieval wrapper; top-K chunks per turn
+  ├── KnowledgeInjector  formats chunks into ## Relevant Knowledge prompt block
   └── _AsyncAINDYClient  optional AINDY bridge (claw/aindy/client.py)
 ```
 
@@ -42,12 +44,12 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 ## Key subsystems
 
 ### Turn pipeline (`_run_turn` in server.py)
-1. Generate `execution_unit_id = str(uuid.uuid4())` — threads through memory writes, AINDY events, tool calls
-2. Load workspace files + skills + memories
-3. Build system prompt via `PromptContext`
-4. Append user message; compact if needed; prune
-5. Detect `is_new_session` (empty history before appending); fire `claw.session.started` if true (fire-and-forget)
-6. Fire AINDY `turn.start` event (fire-and-forget, skipped if AINDY disabled)
+1. Detect `is_new_session` (empty history check — must happen **before** appending the user message)
+2. Generate `execution_unit_id = str(uuid.uuid4())` — threads through memory writes, AINDY events, tool calls
+3. Load workspace files + skills + recall memories + retrieve knowledge chunks (if enabled)
+4. Build system prompt via `PromptContext` (order: identity files → runtime → boot files → memories → knowledge → skills)
+5. Append user message; compact if needed; prune
+6. Fire AINDY events: `claw.session.started` if new session, `sys.v1.claw.turn.start` (both fire-and-forget, skipped if AINDY disabled)
 7. `await turn.run(...)` via `scoped_executor` which injects both `agent_id` **and** `execution_unit_id` — streams chunks to WebChat or collects for other channels
 8. Append assistant message; deliver response
 9. Fire AINDY `turn.complete` or `turn.error` event
@@ -127,7 +129,7 @@ claw_slack/             Slack adapter
 claw_telegram/          Telegram adapter
 claw_webchat/           Built-in browser UI + WebSocket adapter
 workflows/              Nodus DSL scripts (.nd)
-tests/                  Milestone test suites (60/60)
+tests/                  Milestone test suites (72/72)
 skills/                 User skill files (empty by default)
 workspace/              Agent workspace placeholder (.gitkeep)
 ```

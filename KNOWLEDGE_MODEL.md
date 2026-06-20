@@ -6,172 +6,174 @@ The knowledge model defines how information becomes agent-accessible. Getting th
 
 ---
 
-## Current State: Direct Injection
+## Current State: Two-Track Context Injection
 
-Today, Infinity Claw makes workspace knowledge available through two mechanisms:
+Infinity Claw makes workspace knowledge available through two complementary tracks:
 
-**1. File injection (workspace documents)**
+**Track 1 — Identity/boot files (verbatim, always)**
 
-At the start of every turn, files in `~/.claw/agents/{agent_id}/workspace/` are read and appended to the system prompt. The agent sees the raw file content verbatim.
+Eight named files are read whole and injected directly into the system prompt on every turn:
+
+```
+AGENTS.md   SOUL.md   IDENTITY.md   USER.md   TOOLS.md
+HEARTBEAT.md   BOOT.md   BOOTSTRAP.md
+```
+
+These are control structures — agent persona, user profile, tool annotations. They stay verbatim because they are short, authoritative, and always relevant.
+
+**Track 2 — Knowledge index (FTS5, on demand)**
+
+All *other* files in the workspace directory are indexed into a SQLite FTS5 knowledge store. At turn time, the top-K chunks most relevant to the incoming message are retrieved and injected as a `## Relevant Knowledge` section.
 
 ```
 System prompt
- ├── Agent identity + persona
- ├── Date / context
- ├── Memory recall (top-N semantic matches)
- ├── Workspace files (verbatim, all files)
- └── Available skills + tools
+ ├── Agent identity + persona   (AGENTS.md / SOUL.md / IDENTITY.md)
+ ├── User profile               (USER.md)
+ ├── Tool notes                 (TOOLS.md)
+ ├── Runtime metadata           (date, time, host)
+ ├── Boot files                 (HEARTBEAT.md / BOOT.md / BOOTSTRAP.md)
+ ├── Memory recall              (top-N MemoryNode matches)
+ ├── Relevant Knowledge         (top-K FTS5 chunks from workspace)  ← Phase 5
+ └── Skills + tools
 ```
 
-**2. Memory recall (structured)**
-
-At turn start, `MemoryManager.recall(query)` performs a semantic search over the agent's memory nodes and injects the top matches as structured context. Memory nodes were created by previous turns.
-
-**Limitation of this approach:** As the workspace grows, verbatim injection becomes impractical. A workspace with 50 documents fills the context window before the conversation begins. This is the problem the knowledge layer solves.
+This approach scales: the context window stays bounded regardless of workspace size.
 
 ---
 
-## Phase 5+: Knowledge Pipeline
-
-The knowledge layer sits between workspace files and agent context injection. Rather than injecting everything verbatim, it indexes content and retrieves only what is relevant to the current turn.
+## Knowledge Pipeline (Phase 5 — implemented)
 
 ```
-File / Asset / URL
+Workspace directory
         ↓
-   Ingestion
+WorkspaceScanner      ← lists files; excludes identity/boot files + unsupported extensions
         ↓
-   Parsing          ← extract text from PDF, DOCX, HTML, code, etc.
+ingest_file()
+  ├── parse_file()    ← read text; strip HTML for .html/.htm
+  └── chunk_text()    ← sliding window (configurable chunk_size + overlap)
         ↓
-   Chunking         ← split into retrievable segments (size + overlap configurable)
+KnowledgeIndex.upsert_many()
+  ├── knowledge_chunks  (regular SQLite table: chunk_id, workspace_id, source_file, position, content, fts_rowid)
+  └── knowledge_fts     (FTS5 virtual table: content; linked via fts_rowid FK)
         ↓
-   Embedding        ← vector representation via embedding model
+KnowledgeRetriever.retrieve()
+  ├── fts5_query()    ← extract words; join with OR; exclude FTS5 reserved words
+  ├── FTS5 MATCH      ← BM25 ranked search (lower/more negative rank = better)
+  └── workspace_id filter  ← per-agent isolation in base table
         ↓
-   Index            ← stored in AINDY MAS (Postgres + pgvector) or local vector store
+KnowledgeInjector.build_block()
         ↓
-   Retrieval        ← semantic search at turn time
-        ↓
-   Agent Context    ← only relevant chunks injected into system prompt
+PromptContext.knowledge_block   ← injected into system prompt
 ```
 
 ---
 
-## Knowledge Objects
+## Implementation
 
-### Document Chunk
-
-The atomic unit of indexed knowledge:
-
-```
-Chunk
- ├── id           (UUID)
- ├── document_id  (parent document)
- ├── workspace_id (owning workspace)
- ├── content      (text segment)
- ├── embedding    (float vector)
- ├── position     (start/end byte offset in source)
- ├── metadata     (page, section, heading, etc.)
- └── indexed_at
-```
-
-### Knowledge Index
-
-The index is the searchable store of all chunks for a workspace. Two index backends are planned:
-
-| Backend | Storage | Use case |
-|---|---|---|
-| AINDY MAS | Postgres + pgvector | Production; shared across Weave nodes |
-| Local | SQLite + sqlite-vec | Self-contained; no external dependencies |
-
----
-
-## Retrieval Strategy
-
-At turn time, the retrieval pipeline:
-
-1. Embeds the incoming user message (or the last N turns as query)
-2. Runs cosine similarity search against the workspace's chunk index
-3. Optionally traverses the relationship graph from matched chunks (find linked documents, related memories)
-4. Assembles the top-K chunks into a context block
-5. Injects the context block into the system prompt in place of verbatim files
+### Chunk (atomic unit)
 
 ```python
-# Planned interface
-context = await knowledge_index.retrieve(
-    query=turn_text,
-    workspace_id=workspace_id,
-    top_k=10,
-    include_relationships=True,
-)
+@dataclass
+class Chunk:
+    chunk_id:     str   # UUID, fresh per ingest_file() call
+    source_file:  str   # absolute path
+    workspace_id: str   # agent_id
+    content:      str   # text segment
+    position:     int   # chunk index within source file
+```
+
+### KnowledgeIndex (SQLite FTS5)
+
+Two-table schema:
+
+- `knowledge_chunks` — canonical metadata row; stores `fts_rowid` FK into FTS5 table
+- `knowledge_fts` — FTS5 virtual table (content-only); DELETE requires rowid, hence the FK
+
+Key operations:
+- `upsert_many(chunks)` — INSERT into FTS5 first (get rowid), then INSERT into base table
+- `clear_source(file, workspace_id)` — fetch rowids, DELETE from FTS5 by rowid, DELETE from base table
+- `search(query, workspace_id, top_k)` — FTS5 MATCH → filter by workspace_id → sort by rank
+
+### Configuration
+
+```toml
+[knowledge]
+enabled      = false   # opt-in; disabled by default
+db_path      = ""      # defaults to ~/.claw/knowledge.db
+chunk_size   = 500     # characters per chunk
+chunk_overlap = 50     # overlap between consecutive chunks
+top_k        = 5       # chunks injected per turn
 ```
 
 ---
 
 ## Ingestion Triggers
 
-Documents enter the knowledge pipeline through:
-
-| Trigger | Description |
-|---|---|
-| Startup scan | On `claw start`, new/changed files in the workspace directory are ingested |
-| Manual | `claw workspace index` CLI command |
-| Watch mode | File watcher (Phase 5+) re-indexes changed files automatically |
-| Agent write | When an agent writes a file to the workspace, it is auto-indexed |
-| URL fetch | When `browser_fetch` returns content, it can optionally be indexed into the workspace |
+| Trigger | Status | Description |
+|---|---|---|
+| Startup scan | **Implemented** | On `claw start`, all workspace files are indexed for each agent |
+| Manual | **Implemented** | `claw workspace index [--agent ID]` |
+| File watcher | Phase 6+ | Auto-reindex on workspace file change |
+| Agent write | Phase 6+ | Auto-index when agent writes a file |
+| URL fetch | Phase 6+ | Optional indexing of `browser_fetch` responses |
 
 ---
 
-## Relationship Extraction
+## Format Support
 
-Beyond pure vector similarity, the knowledge model extracts explicit relationships between documents:
+| Format | Status | Notes |
+|---|---|---|
+| Markdown (`.md`) | **Implemented** | Character-based chunking |
+| Plaintext (`.txt`, `.rst`) | **Implemented** | Character-based chunking |
+| HTML (`.html`, `.htm`) | **Implemented** | Tags stripped via regex before chunking |
+| Code (`.py`, `.js`, `.ts`) | **Implemented** | Character-based chunking |
+| CSV / JSON | **Implemented** | Character-based chunking |
+| PDF | Phase 6+ | Requires `pdfminer`/`pypdf` |
+| DOCX | Phase 6+ | Requires `python-docx` |
 
-**Automatic (Phase 5+):**
-- Citation links (`Document A mentions Document B by name`)
-- Temporal succession (`Document B updates or supersedes Document A`)
-- Cross-reference (`Memory node derived from Document C`)
+---
 
-**LLM-assisted (Phase 6+):**
-- Semantic relationships extracted by a lightweight extraction agent
-- `contradicts`, `supports`, `elaborates`, `supersedes`, `references`
+## Retrieval Strategy (Phase 5)
 
-These relationships form the knowledge graph traversed during retrieval.
+FTS5 BM25 keyword retrieval:
+1. Extract words from the user message (≥2 chars, filter FTS5 reserved words)
+2. Join as `word1 OR word2 OR ...` FTS5 query
+3. Search `knowledge_fts MATCH ?` → ranked by BM25 (more negative = better)
+4. Filter by `workspace_id` in base table join
+5. Return top-K chunks
+
+**Phase 6+ upgrade path:** Replace FTS5 with cosine similarity over embeddings (OpenAI `text-embedding-3-small` or local model) stored in `sqlite-vec` or AINDY MAS pgvector. The `KnowledgeRetriever` interface is stable — only the index backend changes.
+
+---
+
+## Relationship Extraction (Phase 6+)
+
+Beyond keyword retrieval, future phases will extract explicit relationships between documents:
+
+- **Automatic:** citation links, temporal succession, cross-references to memory nodes
+- **LLM-assisted:** `contradicts`, `supports`, `elaborates`, `supersedes`, `references`
+
+These form the knowledge graph traversed during retrieval to expand context beyond direct matches.
 
 ---
 
 ## Integration with Memory
 
-Memories and knowledge chunks are separate but linked:
-
-- A memory node can be linked to the chunk(s) that prompted its creation (`derived_from`)
-- Retrieval can optionally include memories alongside chunks
-- The injection prompt block merges both: "what the agent knows (memories)" + "what the workspace contains (chunks)"
+Memories and knowledge chunks are injected separately but adjacent in the system prompt:
 
 ```
-Agent System Prompt
- ├── Agent identity
- ├── [Memories] Top-5 recalled memory nodes
- ├── [Knowledge] Top-10 relevant workspace chunks
- └── [Skills + tools]
+ ├── [Memories]   Top-5 recalled memory nodes  (MemoryManager.recall)
+ ├── [Knowledge]  Top-K relevant workspace chunks  (KnowledgeRetriever.retrieve)
 ```
+
+Phase 6+: memory nodes may link to the chunks that prompted their creation (`derived_from`), and retrieval may optionally surface memories alongside chunks.
 
 ---
 
-## Format Support (Planned)
+## Non-Goals (Phase 5)
 
-| Format | Parser | Notes |
-|---|---|---|
-| Markdown | Built-in | Native; headings used as chunk boundaries |
-| Plaintext | Built-in | Character-based chunking |
-| PDF | `pdfminer` / `pypdf` | Text extraction; no OCR initially |
-| HTML | `beautifulsoup4` | Stripped to text |
-| Code | Language-aware | Functions and classes as chunk boundaries |
-| DOCX | `python-docx` | Paragraph-based chunking |
-| CSV / JSON | Structured | Record-based chunking |
-
----
-
-## Non-Goals
-
-- **OCR on scanned images** — not in scope; text-based documents only
-- **Audio / video transcription** — not in scope initially
-- **Real-time streaming ingestion** — batch ingestion only (startup + manual trigger); streaming indexing is a future capability
-- **Cross-workspace retrieval** — knowledge is scoped per workspace; agents cannot retrieve from other workspaces
+- **OCR on scanned images** — text-based documents only
+- **Audio / video transcription** — not in scope
+- **Semantic/vector similarity** — FTS5 BM25 only; embedding-based retrieval is Phase 6+
+- **Cross-workspace retrieval** — knowledge is scoped per `workspace_id` (agent_id)
+- **Real-time file watching** — batch ingestion only (startup + manual); watcher is Phase 6+
