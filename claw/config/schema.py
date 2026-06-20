@@ -140,6 +140,7 @@ class AINDYConfig(BaseModel):
     emit_events: bool = True    # fire-and-forget sys.v1.event.emit on turn lifecycle
     memory_backend: str = "local"  # "local" | "aindy" | "aindy-fallback"
     user_id: str = "claw"       # MAS identity root for path namespacing
+    mounted: bool = False       # True when Claw is registered inside the AINDY platform layer
 
 
 class CronJobConfig(BaseModel):

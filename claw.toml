@@ -53,6 +53,7 @@ enabled = false
 # emit_events = true
 # memory_backend = "local"   # "local" | "aindy" | "aindy-fallback"
 # user_id = "claw"
+# mounted = false            # set true when running inside AINDY platform layer
 
 # ------------------------------------------------------------------
 # Skills (empty — use bundled defaults)

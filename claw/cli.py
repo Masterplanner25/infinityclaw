@@ -264,6 +264,16 @@ def _cmd_start(args) -> None:
     config.gateway.host = host
     config.gateway.port = port
 
+    if config.aindy.mounted:
+        print(
+            "WARNING: aindy.mounted = true in config.\n"
+            "  Standalone 'claw start' is not the intended entry point in mounted mode.\n"
+            "  Use claw.aindy.app_registration.register_claw_app() to mount Claw\n"
+            "  inside the AINDY platform layer instead.\n"
+            "  Continuing in standalone mode — health/observability routes are suppressed.",
+            file=sys.stderr,
+        )
+
     if getattr(args, "daemon", False):
         _daemonize(config)
         return
@@ -272,7 +282,8 @@ def _cmd_start(args) -> None:
 
     print(f"  Claw gateway  http://{host}:{port}/")
     print(f"  WebSocket     ws://{host}:{port}/ws/chat")
-    print(f"  Health        http://{host}:{port}/health")
+    if not config.aindy.mounted:
+        print(f"  Health        http://{host}:{port}/health")
 
     uvicorn.run(app, host=host, port=port, log_level=args.log_level)
 

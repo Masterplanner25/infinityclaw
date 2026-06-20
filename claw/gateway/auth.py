@@ -21,24 +21,33 @@ class GatewayAuth:
 
     Auth is disabled when neither AuthManager is enabled nor a static
     token is configured — all connections are accepted.
+
+    When *bypass* is True (AINDY mounted mode) all checks are skipped;
+    the AINDY platform layer has already authenticated the request.
     """
 
     def __init__(
         self,
         static_token: Optional[str] = None,
         auth_manager=None,  # AuthManager | None
+        bypass: bool = False,
     ) -> None:
         self._static_token = static_token.strip() if static_token else None
         self._auth_manager = auth_manager
+        self._bypass = bypass
 
     @property
     def enabled(self) -> bool:
+        if self._bypass:
+            return False  # bypass == AINDY platform layer handles auth
         if self._auth_manager and self._auth_manager.is_enabled():
             return True
         return bool(self._static_token)
 
     def verify_principal(self, presented: str | None) -> Optional[AuthPrincipal]:
         """Try all auth methods. Returns None if no credential matches."""
+        if self._bypass:
+            return AuthPrincipal(user_id="aindy", auth_type="aindy", scopes=["*"])
         if not self.enabled:
             return AuthPrincipal(user_id="anonymous", auth_type="open", scopes=["*"])
 
@@ -59,6 +68,8 @@ class GatewayAuth:
 
     async def verify_ws(self, websocket: WebSocket, token: Optional[str] = None) -> Optional[AuthPrincipal]:
         """Check auth on a WS upgrade. Closes with 403 if invalid."""
+        if self._bypass:
+            return AuthPrincipal(user_id="aindy", auth_type="aindy", scopes=["*"])
         if not self.enabled:
             return AuthPrincipal(user_id="anonymous", auth_type="open", scopes=["*"])
 

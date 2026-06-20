@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from nodus_adapter_base import BaseChannelAdapter
 
@@ -53,7 +53,11 @@ class ClawGateway:
         self.session_manager = ClawSessionManager(config.session)
         self.channel_registry = ChannelAdapterRegistry()
         self.auth_manager = AuthManager(config.gateway, state_dir=config.state_dir)
-        self.auth = GatewayAuth(config.gateway.token, auth_manager=self.auth_manager)
+        self.auth = GatewayAuth(
+            config.gateway.token,
+            auth_manager=self.auth_manager,
+            bypass=config.aindy.mounted,  # AINDY platform layer handles auth when mounted
+        )
         self.pairing_store = PairingStore()
         self.dm_policy = DmPolicyEnforcer()  # open by default; tighten via config
 
@@ -382,51 +386,27 @@ async def _emit_aindy(client, event_type: str, payload: dict) -> None:
         logger.debug("[gateway] AINDY event skipped %s: %s", event_type, exc)
 
 
-def build_app(config: ClawConfig) -> tuple[FastAPI, ClawGateway]:
-    """Build the FastAPI app and gateway, wired together."""
-    gateway = ClawGateway(config)
+def _build_claw_router(gateway: ClawGateway, config: ClawConfig) -> APIRouter:
+    """Build the Claw APIRouter — all Claw-specific routes.
 
-    @asynccontextmanager
-    async def _lifespan(_app: FastAPI):
-        await gateway.startup()
-        yield
-        await gateway.shutdown()
-
-    app = FastAPI(title="Claw Gateway", version="0.1.0", lifespan=_lifespan)
-
-    # /health and /ready as plain routes (before observability to avoid
-    # prometheus_fastapi_instrumentator _IncludedRouter crash)
-    @app.get("/health", include_in_schema=False)
-    async def health():
-        return {"status": "ok", "service": "claw-gateway"}
-
-    @app.get("/ready", include_in_schema=False)
-    async def ready():
-        return {"status": "ready"}
-
-    try:
-        from nodus_observability_framework import init_observability
-        init_observability(
-            app,
-            service_name="claw-gateway",
-            env=os.environ.get("CLAW_ENV", "development"),
-            log_level=config.log_level,
-            include_health_router=False,
-        )
-    except Exception as exc:
-        logger.warning("[gateway] observability init skipped: %s", exc)
+    Works in both standalone FastAPI mode (included via app.include_router)
+    and AINDY mounted mode (registered via claw.aindy.app_registration).
+    Health, ready, and observability are NOT included here; they are either
+    added by build_app() in standalone mode or provided by AINDY in mounted mode.
+    """
+    router = APIRouter()
 
     # WebChat UI
     static_dir = _resolve_static_dir(config)
     if static_dir and static_dir.exists():
         _index_path = str(static_dir / "index.html")
 
-        @app.get("/")
+        @router.get("/")
         async def webchat_ui():
             return FileResponse(_index_path, media_type="text/html")
 
     # WebChat WS
-    @app.websocket("/ws/chat")
+    @router.websocket("/ws/chat")
     async def ws_chat(websocket: WebSocket, token: Optional[str] = None):
         await gateway.auth.verify_ws(websocket, token)
         await websocket.accept()
@@ -460,13 +440,13 @@ def build_app(config: ClawConfig) -> tuple[FastAPI, ClawGateway]:
                 "channel": "webchat",
             }))
 
-    # Control-plane WS (Phase 3 stub; full nodus_protocol in Phase 3.9)
-    @app.websocket("/ws")
+    # Control-plane WS (stub; full nodus_protocol in Phase 3.9)
+    @router.websocket("/ws")
     async def ws_control(websocket: WebSocket, token: Optional[str] = None):
         await gateway.auth.verify_ws(websocket, token)
         await websocket.accept()
-        import json
-        await websocket.send_text(json.dumps({
+        import json as _json
+        await websocket.send_text(_json.dumps({
             "type": "hello",
             "version": "1.0",
             "note": "control-plane WS — stub",
@@ -478,12 +458,12 @@ def build_app(config: ClawConfig) -> tuple[FastAPI, ClawGateway]:
             pass
 
     # Pairing API
-    @app.post("/pair/generate", include_in_schema=False)
+    @router.post("/pair/generate", include_in_schema=False)
     async def pair_generate(channel_id: str, peer_id: str):
         code = gateway.pairing_store.generate_code(channel_id, peer_id)
         return {"code": code, "ttl_seconds": 300}
 
-    @app.post("/pair/approve", include_in_schema=False)
+    @router.post("/pair/approve", include_in_schema=False)
     async def pair_approve(code: str):
         record = gateway.pairing_store.approve(code)
         if record is None:
@@ -493,20 +473,18 @@ def build_app(config: ClawConfig) -> tuple[FastAPI, ClawGateway]:
         return {"approved": True, "channel_id": record.channel_id, "peer_id": record.peer_id}
 
     # Auth — token issuance and API key management
-    @app.post("/auth/token", include_in_schema=False)
+    @router.post("/auth/token", include_in_schema=False)
     async def auth_token(user_id: str, secret: str):
-        """Issue a JWT. Requires the gateway secret to be presented."""
         from fastapi import HTTPException
         if not gateway.auth_manager.is_enabled():
             raise HTTPException(status_code=404, detail="Auth not enabled")
         if secret != (config.gateway.token or ""):
             raise HTTPException(status_code=403, detail="Invalid secret")
-        token = gateway.auth_manager.issue_token(user_id)
-        return {"token": token, "type": "bearer"}
+        tok = gateway.auth_manager.issue_token(user_id)
+        return {"token": tok, "type": "bearer"}
 
-    @app.post("/auth/keys", include_in_schema=False)
+    @router.post("/auth/keys", include_in_schema=False)
     async def auth_keys_create(label: str, scopes: str = "*"):
-        """Create a new API key. Returns the raw key once — store it securely."""
         from fastapi import HTTPException
         if not gateway.auth_manager.is_enabled():
             raise HTTPException(status_code=404, detail="Auth not enabled")
@@ -521,23 +499,78 @@ def build_app(config: ClawConfig) -> tuple[FastAPI, ClawGateway]:
             "scopes": record.scopes,
         }
 
-    @app.get("/auth/keys", include_in_schema=False)
+    @router.get("/auth/keys", include_in_schema=False)
     async def auth_keys_list():
-        """List active API keys (without raw key values)."""
         keys = gateway.auth_manager.api_key_store.list_keys()
         return {"keys": [
-            {"key_id": k.key_id, "label": k.label, "scopes": k.scopes,
-             "created_at": k.created_at.isoformat(), "last_used": k.last_used.isoformat() if k.last_used else None}
+            {
+                "key_id": k.key_id, "label": k.label, "scopes": k.scopes,
+                "created_at": k.created_at.isoformat(),
+                "last_used": k.last_used.isoformat() if k.last_used else None,
+            }
             for k in keys
         ]}
 
-    @app.delete("/auth/keys/{key_id}", include_in_schema=False)
+    @router.delete("/auth/keys/{key_id}", include_in_schema=False)
     async def auth_keys_revoke(key_id: str):
         revoked = gateway.auth_manager.api_key_store.revoke(key_id)
         if not revoked:
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Key not found")
         return {"revoked": True, "key_id": key_id}
+
+    return router
+
+
+def build_app(config: ClawConfig) -> tuple[FastAPI, ClawGateway]:
+    """Build the FastAPI app and gateway, wired together.
+
+    Standalone mode (aindy.mounted = False, the default): creates a complete
+    FastAPI app with health endpoints, observability, and all Claw routes.
+
+    Mounted mode (aindy.mounted = True): creates a minimal app with only
+    Claw's routes — health/observability come from the AINDY platform layer.
+    Production mounted deployments should use
+    ``claw.aindy.app_registration.register_claw_app()`` instead.
+
+    build_app() always returns (FastAPI, ClawGateway) — this signature is
+    test-critical; do not change it.
+    """
+    gateway = ClawGateway(config)
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        await gateway.startup()
+        yield
+        await gateway.shutdown()
+
+    app = FastAPI(title="Claw Gateway", version="0.1.0", lifespan=_lifespan)
+
+    # Standalone-only: health + observability.
+    # In mounted mode these are provided by the AINDY platform layer.
+    if not config.aindy.mounted:
+        @app.get("/health", include_in_schema=False)
+        async def health():
+            return {"status": "ok", "service": "claw-gateway"}
+
+        @app.get("/ready", include_in_schema=False)
+        async def ready():
+            return {"status": "ready"}
+
+        try:
+            from nodus_observability_framework import init_observability
+            init_observability(
+                app,
+                service_name="claw-gateway",
+                env=os.environ.get("CLAW_ENV", "development"),
+                log_level=config.log_level,
+                include_health_router=False,
+            )
+        except Exception as exc:
+            logger.warning("[gateway] observability init skipped: %s", exc)
+
+    # Claw routes — work in both standalone and mounted mode.
+    app.include_router(_build_claw_router(gateway, config))
 
     return app, gateway
 
