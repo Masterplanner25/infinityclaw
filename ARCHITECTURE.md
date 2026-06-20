@@ -11,11 +11,15 @@ User / External System
         ↓
     Gateway (FastAPI + WebSocket)
         ↓
+  Permissions Layer  ←────────────────── [Phase 7 — CapabilitySet, PermissionEnforcer]
+        ↓
   Agent Runtime (Nodus + AINDY)
         ↓
   Knowledge Layer  ←──────────────────── [Phase 5 — FTS5 file index]
         ↓
   Memory / Workspace Objects / Tools  ←── [Phase 6 — Documents, Tasks, Assets]
+        ↓
+  Coordination Layer  ←───────────────── [Phase 8 — AgentDispatcher, delegate_to_agent]
         ↓
   AINDY Execution Kernel
 ```
@@ -40,14 +44,17 @@ The gateway is the coordination hub. It owns:
 - `ClawSessionManager` — asyncio lock per session key; LLM-based compaction + message pruning
 - `ChannelAdapterRegistry` — inbound/outbound adapter dispatch
 - `BindingResolver` — channel + peer → agent_id routing
-- `SkillLoader` / `SkillGate` — file-based skills with allow/deny
+- `SkillLoader` / `SkillGate` — file-based skills with global and per-agent allow/deny
 - `MemoryManager` — SQLite or AINDY MAS memory + recall injection
 - `KnowledgeIndex` / `KnowledgeRetriever` / `KnowledgeInjector` — FTS5 workspace knowledge (optional, Phase 5)
+- `KnowledgeWatcher` — `watchfiles`-based background auto-reindex task (optional, Phase 6 follow-on)
 - `WorkspaceStore` / `WorkspaceManager` — SQLite workspace objects: Documents, Tasks, Assets, Permissions (optional, Phase 6)
-- `ToolRegistry` — shared tool definitions; `scoped_executor` injects `agent_id` + `execution_unit_id` per turn
+- `AgentDispatcher` — stateless inner-turn dispatch for agent-to-agent delegation (optional, Phase 8)
+- `ToolRegistry` — shared tool definitions; `scoped_executor` enforces permissions + injects `agent_id` + `execution_unit_id` per turn
 - `CronManager` — APScheduler-backed cron jobs
 - `AuthManager` — JWT issuance + `SqliteApiKeyStore`
 - `_AsyncAINDYClient` — optional async bridge to AINDY runtime
+- `PermissionEnforcer` (per-turn) — built each `_run_turn` from `agent_cfg.capabilities`; not stored on gateway
 
 **Boundary:** The gateway serializes concurrent messages to the same session (one asyncio lock per key). It does not know the content of conversations — only their structure.
 
@@ -60,14 +67,18 @@ Each agent is a `ConversationalTurn` (Nodus-managed) wrapping a direct `anthropi
 **Turn pipeline:**
 
 ```
-1. Detect is_new_session (before appending user message)
-2. Load workspace files + skills + recall memories + retrieve knowledge chunks
-3. Build system prompt (PromptContext: identity → runtime → boot → memories → knowledge → skills)
-4. Append user message; compact if needed; prune
-5. Fire AINDY session.started (if new) + turn.start events (fire-and-forget)
-6. turn.run() via scoped_executor (injects agent_id + execution_unit_id into memory and workspace tools)
-7. Append assistant response
-8. Fire AINDY turn.complete / turn.error event
+1.  Detect is_new_session (before appending user message)
+2.  Generate execution_unit_id (UUID) — threads into memory writes, AINDY events, tool calls
+3.  Load workspace files + skills; apply global SkillGate then per-agent SkillGate (capabilities.skill_use)
+4.  Recall memories (own agent); also recall from cross_agent_memory agents (up to 3 each) if configured
+5.  Retrieve knowledge chunks (if enabled); build system prompt via PromptContext
+6.  Append user message; compact if needed; prune
+7.  Fire AINDY session.started (if new) + turn.start events (fire-and-forget)
+8.  Build PermissionEnforcer from agent capabilities; call filter_tool_definitions() — removes denied tools before LLM sees them
+9.  turn.run() via scoped_executor: (a) check_tool_call() before each handler — returns JSON error on PermissionDenied;
+    (b) injects agent_id + execution_unit_id for memory, workspace, and coordination tools
+10. Append assistant response; deliver to channel
+11. Fire AINDY turn.complete / turn.error event
 ```
 
 Each turn carries an `execution_unit_id` (UUID) that threads through memory writes, AINDY events, and cron jobs — forming a complete audit trail.
@@ -120,6 +131,53 @@ CLI: `claw workspace create / list / share`.
 
 ---
 
+### Permissions Layer *(Phase 7 — complete)*
+
+Per-agent capability enforcement. Always active — no config flag required.
+
+```
+_run_turn() build PermissionEnforcer(agent_cfg.capabilities)
+    ↓
+filter_tool_definitions()  ← removes denied tools before LLM sees them
+    ↓
+turn.run() ...
+    ↓
+scoped_executor calls check_tool_call() before every handler
+    ↓
+PermissionDenied → {"error": "permission denied: ..."} returned as tool result
+```
+
+`CapabilitySet` declares: `filesystem`, `external_http`, `tool_use`, `skill_use`.  
+`browser_fetch` always blocks RFC-1918 + loopback regardless of config — no override.  
+Declare in `claw.toml`: `capabilities = { tool_use = { deny = ["write_file"] } }` on `[[agents.list]]`.
+
+---
+
+### Coordination Layer *(Phase 8 — complete)*
+
+Agent-to-agent task delegation. Enabled via `[coordination] enabled = true`.
+
+```
+LLM calls delegate_to_agent(agent_id="researcher", prompt="...")
+    ↓
+scoped_executor injects _agent_id (calling agent)
+    ↓
+AgentDispatcher.dispatch(HandoffRequest)
+    ↓
+ClawGateway.run_agent_turn(agent_id, prompt, context)
+    ← full system prompt: workspace + skills + memories + knowledge
+    ← stateless: no session history; fresh single-message turn
+    ↓
+HandoffResult(success=True, response="...")
+    ↓
+LLM receives target agent's response as tool result
+```
+
+`run_agent_turn()` is always available on `ClawGateway`; only the delegation tool registration is behind `coordination.enabled`.  
+Cross-agent memory: `cross_agent_memory = ["agentA"]` on `[[agents.list]]` — `_run_turn` also recalls `agentA`'s memories (up to 3 per source) and merges them into the prompt.
+
+---
+
 ### Memory
 
 Two storage backends, selectable per deployment:
@@ -142,7 +200,9 @@ Built-in tools: `remember`, `recall`, `list_memories`, `forget`, `browser_fetch`
 
 Workspace tools (Phase 6, requires `workspace.enabled = true`): `ws_create_task`, `ws_list_tasks`, `ws_update_task`, `ws_create_document`, `ws_list_documents`, `ws_get_document`.
 
-Skills extend the tool surface through file-based `.skill` definitions with allow/deny gating per agent.
+Coordination tools (Phase 8, requires `coordination.enabled = true`): `delegate_to_agent` — dispatches a task to another agent and returns its response.
+
+Skills extend the tool surface through file-based `.skill` definitions with global allow/deny gating (`SkillGate`) plus per-agent `capabilities.skill_use` allow/deny (Phase 8).
 
 ---
 
@@ -177,9 +237,10 @@ User → Telegram
         → KnowledgeRetriever.retrieve()  (if knowledge enabled)
         → SkillsInjector.inject()
         → PromptContext.build()
+        → PermissionEnforcer: filter_tool_definitions()
         → ConversationalTurn.run()
             → anthropic.messages.stream()
-            → [tool calls → scoped_executor → ToolRegistry.invoke()]
+            → [tool calls → scoped_executor → check_tool_call() → ToolRegistry.invoke()]
         → MemoryManager.remember() / WorkspaceManager writes [if LLM triggered]
         → TelegramAdapter.send_message(response)
     → AINDY turn.complete event (fire-and-forget)

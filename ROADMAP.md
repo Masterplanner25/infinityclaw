@@ -98,7 +98,7 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 - Private network block for `browser_fetch` — always on; no config required
 - HTTP allowlist and denylist per agent for `browser_fetch`
 - Filesystem capability model declared in `claw.toml` per agent
-- Framework ready for absolute-path filesystem tools (Phase 8+)
+- Framework ready for absolute-path filesystem tools (Phase 9+)
 
 **Work (complete):**
 - `claw/permissions/model.py` — `CapabilitySet`, `FilesystemPermission`, `HttpPermission`, `ToolPermission`, `SkillPermission`
@@ -107,25 +107,28 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 - `claw/gateway/server.py` — `_run_turn` builds `PermissionEnforcer` from agent capabilities each turn; filters `tool_registry.definitions()` before passing to LLM; `scoped_executor` calls `check_tool_call` and returns `{"error": "permission denied: ..."}` on violation
 - `tests/test_aindy_phase7.py` — 37 checks, 16 pytest-collected tests
 
+### Phase 8 — Multi-Agent Coordination
+*Agents delegate tasks to each other*
+
+**Capabilities unlocked:**
+- One agent can hand off a task to a specialized agent and receive its response
+- Coordinator pattern: planner agent sends prompts to executor agents via `delegate_to_agent` tool
+- Per-agent skill gating: `capabilities.skill_use.allow/deny` restricts which skills each agent can use
+- Cross-agent memory: an agent can optionally read another agent's memories (opt-in, declared in config)
+
+**Work (complete):**
+- `claw/coordination/model.py` — `HandoffRequest`, `HandoffResult` data models
+- `claw/coordination/dispatcher.py` — `AgentDispatcher.dispatch()`: stateless inner-turn dispatch
+- `claw/coordination/tools.py` — `delegate_to_agent` tool + `is_coordination_tool()` predicate
+- `ClawGateway.run_agent_turn()` — headless inner turn (no session, no channel delivery)
+- `claw/config/schema.py` — `CoordinationConfig(enabled=False)` on `ClawConfig`; `cross_agent_memory: list[str]` on `AgentConfig`
+- `claw/skills/gating.py` — `SkillGate.filter()` now treats `["*"]` in allow as wildcard (allow all)
+- `claw/gateway/server.py` — per-agent skill gate in `_run_turn`; cross-agent memory recall; delegation tool registration in `startup()`; `_agent_id` injection for coordination tools in `scoped_executor`
+- `tests/test_aindy_phase8.py` — 29 checks, 14 pytest-collected tests
+
 ---
 
 ## Planned
-
-### Phase 8 — Multi-Agent Coordination
-*Agents collaborate inside a workspace*
-
-**Capabilities unlocked:**
-- One agent can hand off a task to a specialized agent
-- Agents share workspace knowledge but have isolated memory and sessions
-- A coordinator agent can spawn sub-agents for parallel execution
-- Cross-agent message passing via AINDY event bus
-
-**Work:**
-- Agent handoff protocol (Nodus DSL + AINDY event bus)
-- `claw/coordination/` — handoff, delegation, result aggregation
-- Cross-agent memory read (opt-in, declared in config)
-- Coordinator pattern: planner agent + executor agents
-- AINDY MAS as shared coordination state store
 
 ### Phase 9 — Distributed Workspaces
 *Workspaces span multiple Claw instances across the Weave*

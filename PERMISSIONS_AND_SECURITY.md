@@ -62,36 +62,28 @@ When Claw runs inside the AINDY platform layer (`aindy.mounted = true`), `Gatewa
 
 ---
 
-## Planned Permissions Model (Phase 5+)
+## Permissions Model *(Phase 7 — complete)*
 
 ### Capability Declarations
 
-Each agent declares its capabilities explicitly. An agent cannot use a capability that is not declared, regardless of what the LLM requests.
+Each agent declares its capabilities explicitly in `claw.toml`. An agent cannot use a capability that is not declared, regardless of what the LLM requests. Capabilities are enforced in `_run_turn` via `PermissionEnforcer` — built fresh each turn, never cached.
 
 ```toml
 [[agents.list]]
 id = "main"
-
-[agents.list.capabilities]
-memory        = { read = true,  write = true  }
-workspace     = { read = true,  write = true  }
-filesystem    = { read = false, write = false, delete = false }
-external_http = { enabled = true, allowlist = [] }  # empty = any URL
-tool_use      = { allow = ["*"], deny = [] }
-skill_use     = { allow = ["*"], deny = [] }
+capabilities = { tool_use = { allow = ["*"], deny = [] }, external_http = { enabled = true } }
 ```
 
 ```toml
 [[agents.list]]
 id = "readonly-assistant"
-
-[agents.list.capabilities]
-memory        = { read = true,  write = false }
-workspace     = { read = true,  write = false }
-filesystem    = { read = false, write = false, delete = false }
-external_http = { enabled = false }
-tool_use      = { allow = ["recall", "browser_fetch"], deny = ["remember", "forget"] }
+capabilities = { external_http = { enabled = false }, tool_use = { allow = ["recall", "browser_fetch"], deny = ["remember", "forget"] } }
 ```
+
+**Enforcement flow:**
+1. `filter_tool_definitions()` strips denied/non-allowed tools before the LLM call — the LLM never sees tools it cannot use
+2. `check_tool_call()` re-checks at invocation time — catches any bypass attempt
+3. `PermissionDenied` raises → `scoped_executor` returns `{"error": "permission denied: ..."}` as the tool result
 
 ---
 
@@ -137,7 +129,7 @@ external_http = {
 }
 ```
 
-Private network addresses (`192.168.x.x`, `10.x.x.x`, `172.16.x.x`, `127.x.x.x`, `localhost`) are always blocked unless the operator explicitly enables internal access.
+Private network addresses (`192.168.x.x`, `10.x.x.x`, `172.16.x.x`, `127.x.x.x`, `localhost`, `::1`) are **always blocked** — there is no config switch to allow private network access. This is enforced unconditionally in `_is_private_host()` inside `PermissionEnforcer`.
 
 ---
 
@@ -147,7 +139,7 @@ Memory access is per-agent namespaced. By default:
 
 - An agent can read and write its own memory namespace
 - An agent cannot read or write another agent's memory namespace
-- Cross-agent memory sharing requires explicit declaration (Phase 5+)
+- Cross-agent memory **read** is opt-in via `cross_agent_memory = ["agentA"]` on `[[agents.list]]` (Phase 8). This causes `_run_turn` to also recall `agentA`'s memories and merge them into the system prompt. Write isolation is always enforced — an agent can only write its own namespace.
 
 ---
 
@@ -165,14 +157,18 @@ tool_use = { allow = ["remember", "recall"], deny = [] }
 
 ### Skill Gating
 
-Skills are subject to the existing allow/deny gate (`SkillGate`). In Phase 5+, skill permissions are merged into the unified capability model:
+Skills are filtered by two gates in sequence (Phase 8):
+
+1. **Global gate** — `[skills] allow/deny` in `claw.toml`; applies to all agents
+2. **Per-agent gate** — `capabilities.skill_use.allow/deny` on `[[agents.list]]`; applied after the global gate
 
 ```toml
-[agents.list.capabilities]
-skill_use = { allow = ["file_read"], deny = ["shell_exec"] }
+[[agents.list]]
+id = "restricted"
+capabilities = { skill_use = { allow = ["file_read"], deny = ["shell_exec"] } }
 ```
 
-Shell execution skills are always in the deny list by default.
+`["*"]` in the allow list means "all skills that pass the global gate" (wildcard). An empty allow list also means all. Shell execution skills should always appear in the global deny list.
 
 ---
 

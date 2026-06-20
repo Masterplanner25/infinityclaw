@@ -21,7 +21,7 @@ Workspace
  ├── Tasks        (tracked work items with lifecycle: open → in_progress → done/cancelled)
  ├── Assets       (references to binary/external artifacts: id, name, content_type, path)
  ├── Agents       (which agents operate in this workspace, with permissions)
- └── Relationships (typed edges between objects — Phase 8+)
+ └── Relationships (typed edges between objects — Phase 9+)
 ```
 
 ---
@@ -141,13 +141,13 @@ The workspace **owner** always has full read+write access, regardless of explici
 claw workspace share <workspace_id> --agent <agent_id> --perm <read|write|none>
 ```
 
-`can_read()` / `can_write()` are enforced at the manager layer. Cross-workspace tool access (an agent operating in another agent's workspace) is Phase 8+.
+`can_read()` / `can_write()` are enforced at the manager layer. Cross-workspace tool access (an agent operating in another agent's workspace) is Phase 9+.
 
 ---
 
 ### Relationships
 
-Typed edges between workspace objects — **not yet implemented (Phase 8+).**
+Typed edges between workspace objects — **not yet implemented (Phase 9+).**
 
 ```
 Document A --references--> Document B
@@ -192,7 +192,7 @@ A workspace is a **trust boundary**. Objects inside a workspace are visible to a
 
 - **Data isolation:** Multiple workspaces on the same Claw instance are isolated by default
 - **Agent scope:** An agent's home workspace has `id == agent_id`; other workspaces require an explicit permission grant
-- **Multi-agent coordination (Phase 8+):** Cross-workspace agent communication via AINDY event bus
+- **Agent delegation (Phase 8 — complete):** `delegate_to_agent` tool; agents hand off tasks to each other via stateless inner turns. Cross-workspace tool access and AINDY event-bus coordination are Phase 9+.
 
 ---
 
@@ -208,5 +208,7 @@ A workspace is a **trust boundary**. Objects inside a workspace are visible to a
 | Tasks | **Phase 6** — first-class objects with lifecycle | `ws_create_task`/`ws_update_task` tools |
 | Assets | **Phase 6** — typed DB-backed references | Registered by ID, not stored in DB |
 | Agents per workspace | **Phase 6** — `WorkspacePermission` (none/read/write) | Owner always has full access |
-| Relationships | **Phase 8+** — typed edges in knowledge graph | Not yet modeled |
-| Embedding-based retrieval | **Phase 8+** — replace FTS5 with pgvector | KnowledgeRetriever interface stable |
+| Agent delegation | **Phase 8** — `delegate_to_agent` tool, `AgentDispatcher`, `run_agent_turn()` | Stateless; no cross-workspace tool access |
+| Cross-agent memory | **Phase 8** — `cross_agent_memory` on `AgentConfig` | Read-only; write isolation preserved |
+| Relationships | **Phase 9+** — typed edges in knowledge graph | Not yet modeled |
+| Embedding-based retrieval | **Phase 9+** — replace FTS5 with pgvector | KnowledgeRetriever interface stable |
