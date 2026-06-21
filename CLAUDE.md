@@ -208,6 +208,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | Weave tools injected same as coordination | `is_weave_tool(name)` is imported inline in both `scoped_executor` and `_inner_exec`; they both check `or is_weave_tool(name)` so `_agent_id`, `_execution_unit_id`, `_session_key` are injected. The `weave_delegate` handler extracts `_session_key` to build the cross-node session key `weave:{from_node}:{caller_session}:{to_node}:{agent_id}`. |
 | Weave REST endpoints conditional | All `/weave/*` routes are only registered inside `if config.weave.enabled:` in `_build_claw_router`. When disabled, the block is skipped entirely. |
 | `WeaveClient` never raises | All `WeaveClient` methods catch `Exception` and return `False` / `[]` / `"[error:...]"` — network failures never propagate to the LLM tool call. |
+| `claw weave connect` requires live remote | `connect` always calls `GET /weave/agents` on the remote to fetch its `node_id`. `--no-ping` only skips the subsequent `WeaveClient.ping()` call — it does NOT bypass the node_id fetch. If the remote is unreachable, `connect` will always fail; there is no offline-registration path. |
 
 ## Package layout
 
@@ -227,7 +228,7 @@ claw_slack/             Slack adapter
 claw_telegram/          Telegram adapter
 claw_webchat/           Built-in browser UI + WebSocket adapter
 workflows/              Nodus DSL scripts (.nd)
-tests/                  Milestone test suites (132/132)
+tests/                  Milestone test suites (184/184)
 skills/                 User skill files (empty by default)
 workspace/              Agent workspace placeholder (.gitkeep)
 ```
@@ -248,7 +249,7 @@ workspace/              Agent workspace placeholder (.gitkeep)
 
 `CLAW_AINDY_INTEGRATION_PLAN.md` in the repo root is the authoritative phase-by-phase migration plan.
 
-**Phases 1–9 are complete (including Phase 6 follow-ons):**
+**Phases 1–12 are complete (including Phase 6 follow-ons):**
 - Phase 1: SDK wiring + lifespan + turn lifecycle events
 - Phase 2: AINDY memory backend (`AINDYMemoryStore`, `_aindy_or_local`, `memory_backend` config)
 - Phase 3: Execution tracking — `execution_unit_id` per turn, `claw.session.*` / `claw.memory.written` / `claw.cron.executed` events

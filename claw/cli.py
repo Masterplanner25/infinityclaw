@@ -714,7 +714,7 @@ def _cmd_weave_connect(args, config) -> None:
     async def _connect():
         remote_node_id = await _fetch_node_id()
         if not remote_node_id:
-            print("Failed to retrieve remote node ID. Use --no-ping to skip reachability check.")
+            print(f"Failed to retrieve remote node ID from {url}/weave/agents — is the remote gateway running?")
             sys.exit(1)
 
         remote = WeaveNode(node_id=remote_node_id, url=url, label=label, api_key=api_key)
