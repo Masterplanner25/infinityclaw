@@ -1,8 +1,8 @@
 """Weave data models."""
 from __future__ import annotations
-import os
 import uuid
 from pathlib import Path
+from typing import Optional
 from pydantic import BaseModel
 
 
@@ -26,6 +26,25 @@ class WeaveRegisterRequest(BaseModel):
     url: str
     label: str = ""
     api_key: str = ""
+
+
+class WeaveCreateDocumentRequest(BaseModel):
+    name: str
+    body: str = ""
+    content_type: str = "text"
+
+
+class WeaveCreateTaskRequest(BaseModel):
+    title: str
+    body: str = ""
+    priority: int = 0
+
+
+class WeaveUpdateTaskRequest(BaseModel):
+    status: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+    priority: Optional[int] = None
 
 
 def get_or_create_node_id(config_node_id: str, state_dir: str = "") -> str:

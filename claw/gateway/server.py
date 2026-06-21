@@ -846,6 +846,12 @@ def _build_claw_router(gateway: ClawGateway, config: ClawConfig) -> APIRouter:
         # Workspace federation endpoints — only when workspace is also enabled
         if config.workspace.enabled:
             from typing import Optional as _Opt
+            from claw.weave.model import (
+                WeaveCreateDocumentRequest as _WCDocReq,
+                WeaveCreateTaskRequest as _WCTaskReq,
+                WeaveUpdateTaskRequest as _WUTaskReq,
+            )
+            from claw.workspace.model import Document as _Document, Task as _Task
 
             @router.get("/weave/workspace/{agent_id}/documents", include_in_schema=False)
             async def weave_workspace_documents(agent_id: str):
@@ -863,12 +869,52 @@ def _build_claw_router(gateway: ClawGateway, config: ClawConfig) -> APIRouter:
                     raise _HTTPException(status_code=404, detail="Document not found")
                 return doc.model_dump(mode="json")
 
+            @router.post("/weave/workspace/{agent_id}/documents", include_in_schema=False)
+            async def weave_workspace_create_document(agent_id: str, req: _WCDocReq):
+                await gateway.workspace_manager.ensure_workspace(agent_id)
+                doc = _Document(workspace_id=agent_id, name=req.name, body=req.body,
+                                content_type=req.content_type)
+                created = await gateway.workspace_manager.upsert_document(doc)
+                return created.model_dump(mode="json")
+
             @router.get("/weave/workspace/{agent_id}/tasks", include_in_schema=False)
             async def weave_workspace_tasks(agent_id: str, status: _Opt[str] = None):
                 tasks = await gateway.workspace_manager.list_tasks(agent_id, status)
                 return {
                     "agent_id": agent_id,
                     "tasks": [t.model_dump(mode="json") for t in tasks],
+                }
+
+            @router.post("/weave/workspace/{agent_id}/tasks", include_in_schema=False)
+            async def weave_workspace_create_task(agent_id: str, req: _WCTaskReq):
+                await gateway.workspace_manager.ensure_workspace(agent_id)
+                task = _Task(workspace_id=agent_id, title=req.title, body=req.body,
+                             priority=req.priority)
+                created = await gateway.workspace_manager.create_task(task)
+                return created.model_dump(mode="json")
+
+            @router.patch("/weave/workspace/{agent_id}/tasks/{task_id}", include_in_schema=False)
+            async def weave_workspace_update_task(agent_id: str, task_id: str, req: _WUTaskReq):
+                from fastapi import HTTPException as _HTTPException
+                existing = await gateway.workspace_manager.get_task(task_id)
+                if existing is None or existing.workspace_id != agent_id:
+                    raise _HTTPException(status_code=404, detail="Task not found")
+                fields = {k: v for k, v in req.model_dump().items() if v is not None}
+                updated = await gateway.workspace_manager.update_task(task_id, **fields)
+                return updated.model_dump(mode="json")
+
+        # Knowledge federation endpoint — only when knowledge is also enabled
+        if config.knowledge.enabled and gateway.knowledge_retriever is not None:
+            @router.get("/weave/workspace/{agent_id}/knowledge", include_in_schema=False)
+            async def weave_workspace_knowledge(agent_id: str, q: str, limit: int = 5):
+                import asyncio as _asyncio
+                import dataclasses as _dc
+                chunks = await _asyncio.to_thread(
+                    gateway.knowledge_index.search, q, agent_id, limit
+                )
+                return {
+                    "agent_id": agent_id,
+                    "chunks": [_dc.asdict(c) for c in chunks],
                 }
 
     return router
