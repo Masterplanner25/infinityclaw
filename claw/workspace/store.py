@@ -8,6 +8,23 @@ from typing import Optional
 
 from .model import Asset, Document, Task, Workspace, WorkspacePermission
 
+SCHEMA_VERSION = 1
+
+
+def _read_schema_version(conn: sqlite3.Connection) -> int:
+    try:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        return row[0] if row else 0
+    except sqlite3.OperationalError:
+        return 0
+
+
+def _write_schema_version(conn: sqlite3.Connection, version: int) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+    conn.execute("DELETE FROM schema_version")
+    conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+    conn.commit()
+
 _ISO = "%Y-%m-%dT%H:%M:%S.%f"
 
 
@@ -82,8 +99,15 @@ class WorkspaceStore:
                 level           TEXT NOT NULL DEFAULT 'read',
                 PRIMARY KEY (workspace_id, agent_id)
             );
+            CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
         """)
         self._conn.commit()
+        current = _read_schema_version(self._conn)
+        if current < SCHEMA_VERSION:
+            _write_schema_version(self._conn, SCHEMA_VERSION)
+
+    def schema_version(self) -> int:
+        return _read_schema_version(self._conn)
 
     def close(self) -> None:
         self._conn.close()

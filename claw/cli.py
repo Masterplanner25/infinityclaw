@@ -63,6 +63,15 @@ def main() -> None:
                             choices=["none", "read", "write"],
                             help="Permission level (default: read)")
 
+    # backup
+    p_backup = sub.add_parser("backup", help="Archive all data stores to a .tar.gz file")
+    p_backup.add_argument("--output", "-o", metavar="PATH", default="",
+                          help="Output archive path (default: claw-backup-<timestamp>.tar.gz)")
+
+    # restore
+    p_restore = sub.add_parser("restore", help="Restore data stores from a backup archive")
+    p_restore.add_argument("archive", metavar="ARCHIVE", help="Path to .tar.gz backup archive")
+
     # weave
     p_weave = sub.add_parser("weave", help="Manage distributed Weave node connections")
     weave_sub = p_weave.add_subparsers(dest="weave_cmd")
@@ -109,6 +118,10 @@ def main() -> None:
         _cmd_check(args)
     elif command == "doctor":
         _cmd_doctor(args)
+    elif command == "backup":
+        _cmd_backup(args)
+    elif command == "restore":
+        _cmd_restore(args)
     elif command == "stop":
         _cmd_stop(args)
     elif command == "status":
@@ -262,6 +275,55 @@ def _cmd_doctor(args) -> None:
     else:
         warn("AINDY", "disabled (set aindy.enabled = true to enable)")
 
+    # 10. DB integrity checks
+    def _run_integrity(db_path_cfg: str, default_name: str, label: str) -> None:
+        db = db_path_cfg or str(state_dir / default_name)
+        if not Path(db).exists():
+            return
+        if _db_integrity_ok(db):
+            ok(f"{label} integrity", db)
+        else:
+            fail(f"{label} integrity", f"PRAGMA integrity_check failed for {db}")
+
+    if cfg.memory.enabled:
+        _run_integrity(cfg.memory.db_path, "memory.db", "Memory DB")
+    if cfg.workspace.enabled:
+        _run_integrity(cfg.workspace.db_path, "workspace.db", "Workspace DB")
+    if cfg.weave.enabled:
+        _run_integrity(cfg.weave.db_path, "weave.db", "Weave DB")
+
+    # 11. Weave peer reachability
+    if cfg.weave.enabled:
+        weave_db = cfg.weave.db_path or str(state_dir / "weave.db")
+        if Path(weave_db).exists():
+            from claw.weave.model import get_or_create_node_id
+            from claw.weave.registry import WeaveNodeStore
+            from claw.weave.client import WeaveClient
+
+            node_id = get_or_create_node_id(cfg.weave.node_id, str(state_dir))
+            ws = WeaveNodeStore(weave_db)
+            peers = ws.list_nodes()
+            ws.close()
+
+            if not peers:
+                ok("Weave peers", "no peers registered")
+            else:
+                client = WeaveClient(node_id)
+
+                async def _check_peers():
+                    for node in peers:
+                        reachable = await client.ping(node)
+                        short_id = node.node_id[:12]
+                        if reachable:
+                            ok(f"Weave peer [{short_id}]", node.url)
+                        else:
+                            warn(f"Weave peer [{short_id}]", f"unreachable at {node.url}")
+                asyncio.run(_check_peers())
+
+    # 12. Config consistency
+    for msg in _check_config_consistency(cfg):
+        warn("Config", msg)
+
     # Summary
     n_ok = sum(1 for _, s, _ in checks if s == "OK  ")
     n_warn = sum(1 for _, s, _ in checks if s == "WARN")
@@ -269,6 +331,207 @@ def _cmd_doctor(args) -> None:
     print(f"\n  {n_ok} OK  {n_warn} warnings  {n_fail} failures\n")
     if n_fail:
         sys.exit(1)
+
+
+def _db_integrity_ok(db_path: str) -> bool:
+    """Return True if the SQLite DB at db_path passes PRAGMA integrity_check."""
+    import sqlite3 as _sq
+    from pathlib import Path as _Path
+    if not _Path(db_path).exists():
+        return False
+    try:
+        conn = _sq.connect(db_path)
+        result = conn.execute("PRAGMA integrity_check").fetchone()
+        conn.close()
+        return bool(result and result[0] == "ok")
+    except Exception:
+        return False
+
+
+def _check_config_consistency(cfg) -> list[str]:
+    """Return a list of warning strings for config inconsistencies."""
+    warnings: list[str] = []
+
+    if cfg.aindy.memory_backend in ("aindy", "aindy-fallback") and not cfg.aindy.enabled:
+        warnings.append(
+            f"memory_backend={cfg.aindy.memory_backend!r} but aindy.enabled = false "
+            "- operations will fall back to SQLite"
+        )
+
+    def _looks_inline(value: str) -> bool:
+        if not value:
+            return False
+        if value.startswith("$"):
+            return False
+        placeholders = {"YOUR_KEY_HERE", "CHANGE_ME", "TODO", "PLACEHOLDER", "SECRET"}
+        if any(p in value.upper() for p in placeholders):
+            return False
+        return True
+
+    secret_fields: list[tuple[str, str]] = []
+    if cfg.gateway.token:
+        secret_fields.append(("gateway.token", cfg.gateway.token))
+    if cfg.aindy.api_key:
+        secret_fields.append(("aindy.api_key", cfg.aindy.api_key))
+    for cred in cfg.credentials:
+        secret_fields.append((f"credentials[{cred.id}].api_key", cred.api_key))
+
+    for field_name, value in secret_fields:
+        if _looks_inline(value):
+            warnings.append(
+                f"Secret inline: {field_name} - "
+                "consider an environment variable for production use"
+            )
+
+    return warnings
+
+
+def _cmd_backup(args) -> None:
+    import json
+    import shutil
+    import sqlite3
+    import tarfile
+    import tempfile
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from claw import __version__
+    from claw.config.loader import load_config
+    from claw.memory.sqlite_store import SCHEMA_VERSION as MEM_VER
+    from claw.weave.registry import SCHEMA_VERSION as WEAVE_VER
+    from claw.workspace.store import SCHEMA_VERSION as WS_VER
+
+    cfg = load_config(getattr(args, "config", None))
+    state_dir = Path(cfg.state_dir).expanduser()
+
+    def _get_db_schema_version(path: Path) -> int:
+        try:
+            conn = sqlite3.connect(str(path))
+            row = conn.execute("SELECT version FROM schema_version").fetchone()
+            conn.close()
+            return row[0] if row else 0
+        except Exception:
+            return 0
+
+    stores: dict[str, dict] = {}
+    candidates = [
+        ("memory",    cfg.memory.enabled,    cfg.memory.db_path,    "memory.db",    MEM_VER),
+        ("workspace", cfg.workspace.enabled,  cfg.workspace.db_path, "workspace.db", WS_VER),
+        ("weave",     cfg.weave.enabled,      cfg.weave.db_path,     "weave.db",     WEAVE_VER),
+    ]
+    for name, enabled, db_path_cfg, default_name, expected_ver in candidates:
+        if not enabled:
+            continue
+        path = Path(db_path_cfg) if db_path_cfg else state_dir / default_name
+        if not path.exists():
+            print(f"  [SKIP] {name}: {path} not found (never written)")
+            continue
+        stores[name] = {"path": path, "schema_version": _get_db_schema_version(path)}
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output = getattr(args, "output", "") or f"claw-backup-{ts}.tar.gz"
+
+    manifest = {
+        "claw_version": __version__,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "stores": {name: {"schema_version": info["schema_version"]} for name, info in stores.items()},
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        for name, info in stores.items():
+            shutil.copy2(info["path"], tmp / f"{name}.db")
+        with tarfile.open(output, "w:gz") as tar:
+            tar.add(tmp / "manifest.json", arcname="manifest.json")
+            for name in stores:
+                tar.add(tmp / f"{name}.db", arcname=f"{name}.db")
+
+    print(f"Backup created: {output}")
+    if stores:
+        print(f"  Stores: {', '.join(stores.keys())}")
+    else:
+        print("  No enabled stores had data to back up.")
+
+
+def _cmd_restore(args) -> None:
+    import json
+    import sqlite3
+    import tarfile
+    from pathlib import Path
+
+    from claw.config.loader import load_config
+    from claw.memory.sqlite_store import SCHEMA_VERSION as MEM_VER
+    from claw.weave.registry import SCHEMA_VERSION as WEAVE_VER
+    from claw.workspace.store import SCHEMA_VERSION as WS_VER
+
+    cfg = load_config(getattr(args, "config", None))
+    state_dir = Path(cfg.state_dir).expanduser()
+    archive_path = args.archive
+
+    if not Path(archive_path).exists():
+        print(f"Archive not found: {archive_path}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            names = tar.getnames()
+            if "manifest.json" not in names:
+                print("Invalid archive: missing manifest.json", file=sys.stderr)
+                sys.exit(1)
+
+            manifest_f = tar.extractfile("manifest.json")
+            if manifest_f is None:
+                print("Invalid archive: could not read manifest.json", file=sys.stderr)
+                sys.exit(1)
+            manifest = json.loads(manifest_f.read())
+
+            current_versions = {"memory": MEM_VER, "workspace": WS_VER, "weave": WEAVE_VER}
+            for name, info in manifest.get("stores", {}).items():
+                backup_ver = info.get("schema_version", 0)
+                current_ver = current_versions.get(name, 0)
+                if backup_ver != current_ver:
+                    print(
+                        f"Schema version mismatch for '{name}': "
+                        f"backup={backup_ver}, current={current_ver}. "
+                        "Upgrade your Claw installation before restoring.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
+            db_paths = {
+                "memory":    Path(cfg.memory.db_path)    if cfg.memory.db_path    else state_dir / "memory.db",
+                "workspace": Path(cfg.workspace.db_path) if cfg.workspace.db_path else state_dir / "workspace.db",
+                "weave":     Path(cfg.weave.db_path)     if cfg.weave.db_path     else state_dir / "weave.db",
+            }
+
+            restored = []
+            for name in manifest.get("stores", {}):
+                archive_name = f"{name}.db"
+                if archive_name not in names:
+                    print(f"  [SKIP] {name}: missing from archive")
+                    continue
+                target = db_paths.get(name)
+                if target is None:
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                member_f = tar.extractfile(archive_name)
+                if member_f is None:
+                    print(f"  [SKIP] {name}: could not read from archive")
+                    continue
+                target.write_bytes(member_f.read())
+                restored.append(f"{name} -> {target}")
+
+    except tarfile.TarError as exc:
+        print(f"Failed to open archive: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if restored:
+        print("Restore complete:")
+        for line in restored:
+            print(f"  {line}")
+    else:
+        print("No stores were restored (archive may be empty or stores not enabled).")
 
 
 def _cmd_check(args) -> None:

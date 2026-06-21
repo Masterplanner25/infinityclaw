@@ -10,6 +10,8 @@ from typing import Optional
 
 from nodus_memory import MemoryNode
 
+SCHEMA_VERSION = 1
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS memory_nodes (
     id          TEXT    NOT NULL,
@@ -34,7 +36,23 @@ CREATE TABLE IF NOT EXISTS memory_nodes (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_user ON memory_nodes(user_id);
 CREATE INDEX IF NOT EXISTS idx_memory_type ON memory_nodes(user_id, memory_type);
+CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 """
+
+
+def _read_schema_version(conn: sqlite3.Connection) -> int:
+    try:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        return row[0] if row else 0
+    except sqlite3.OperationalError:
+        return 0
+
+
+def _write_schema_version(conn: sqlite3.Connection, version: int) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+    conn.execute("DELETE FROM schema_version")
+    conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+    conn.commit()
 
 
 class MemorySqliteStore:
@@ -54,6 +72,16 @@ class MemorySqliteStore:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(_DDL)
+            self._apply_migrations(conn)
+
+    def _apply_migrations(self, conn: sqlite3.Connection) -> None:
+        current = _read_schema_version(conn)
+        if current < SCHEMA_VERSION:
+            _write_schema_version(conn, SCHEMA_VERSION)
+
+    def schema_version(self) -> int:
+        with self._lock:
+            return _read_schema_version(self._connect())
 
     def _connect(self) -> sqlite3.Connection:
         if self._conn is None:

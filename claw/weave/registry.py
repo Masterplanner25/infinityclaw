@@ -6,6 +6,23 @@ from typing import Optional
 
 from .model import WeaveNode
 
+SCHEMA_VERSION = 1
+
+
+def _read_schema_version(conn: sqlite3.Connection) -> int:
+    try:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        return row[0] if row else 0
+    except sqlite3.OperationalError:
+        return 0
+
+
+def _write_schema_version(conn: sqlite3.Connection, version: int) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+    conn.execute("DELETE FROM schema_version")
+    conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+    conn.commit()
+
 
 class WeaveNodeStore:
     def __init__(self, db_path: str = "") -> None:
@@ -18,15 +35,22 @@ class WeaveNodeStore:
         self._init_schema()
 
     def _init_schema(self) -> None:
-        self._conn.execute("""
+        self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS weave_nodes (
                 node_id TEXT PRIMARY KEY,
                 url     TEXT NOT NULL,
                 label   TEXT NOT NULL DEFAULT '',
                 api_key TEXT NOT NULL DEFAULT ''
-            )
+            );
+            CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
         """)
         self._conn.commit()
+        current = _read_schema_version(self._conn)
+        if current < SCHEMA_VERSION:
+            _write_schema_version(self._conn, SCHEMA_VERSION)
+
+    def schema_version(self) -> int:
+        return _read_schema_version(self._conn)
 
     def register(self, node: WeaveNode) -> None:
         self._conn.execute(
