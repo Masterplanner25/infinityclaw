@@ -280,7 +280,7 @@ Design and architecture docs:
 | Document | Covers |
 |---|---|
 | `docs/CLAW_AINDY_INTEGRATION_PLAN.md` | Authoritative phase-by-phase AINDY integration plan (Phases 1–14 complete) |
-| `docs/ROADMAP.md` | Phase completion status and upcoming work |
+| `docs/ROADMAP.md` | Phase completion status; Phase 15 (operational hardening) scoped; Phases 16–20 (public product path) documented; deferred Weave options B/C preserved |
 | `docs/ARCHITECTURE.md` | High-level architecture narrative |
 | `docs/AGENT_SPEC.md` | Agent identity and capability model |
 | `docs/WORKSPACE_SPEC.md` | Workspace object model spec |

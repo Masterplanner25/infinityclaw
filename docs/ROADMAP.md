@@ -238,10 +238,125 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 
 ## Planned
 
+### Phase 15 — Operational Hardening
+*Stable for personal use*
+
+Phase 15 closes the gap between "feature complete" and "reliably runnable." No new capabilities — only the operational foundations that make the system trustworthy to depend on day-to-day.
+
+**Goal:** Any user can back up their data, upgrade without manual DB surgery, and get actionable diagnostics when something is wrong.
+
+**Work:**
+
+- `claw backup [--output <path>]` — archives all enabled SQLite stores (memory, workspace, weave) to a timestamped `.tar.gz`; prints the output path on success
+- `claw restore <archive>` — validates archive contents before overwriting; refuses to restore if the target store's schema version doesn't match
+- Schema versioning — add a `schema_version` table to `MemorySqliteStore`, `WorkspaceStore`, and `WeaveNodeStore`; `ClawGateway.startup()` applies pending migrations automatically on startup; no manual intervention required for upgrades
+- Expanded `claw doctor`:
+  - SQLite integrity check (`PRAGMA integrity_check`) for each enabled store — reports corruption before it causes a runtime failure
+  - Weave peer reachability — pings each registered peer node and reports status (reachable / unreachable / no peers)
+  - Config consistency warnings — warn if `memory_backend = "aindy"` is set but no AINDY URL or API key is configured; warn if any known secret field (JWT secret, API key, token) appears to be a hardcoded non-placeholder value in `claw.toml`
+
+---
+
+## Public Product Path
+
+> **Context:** Claw's primary purpose is to demonstrate the Masterplan Infinite Weave Framework and AINDY architecture. The phases below are what "public release" would require if the project ever moves beyond personal use and demonstration. They are not currently active.
+
+> **License decision (resolved):** Apache 2.0. MIT-compatible (AINDY is MIT), permissive, enterprise-friendly, patent grants included. A `LICENSE` file is added in Phase 17 alongside the distribution work. No CLA required — this is not a commercial open-core project.
+
+### Phase 16 — Security Hardening
+*Safe to expose to other people*
+
+**Goal:** Closes the gap between "works for me" and "safe to run as a service others connect to." No new features — adversarial review of the existing surface.
+
+**Work:**
+- Rate limiting via `slowapi` — per-session and per-API-key limits on turn and REST endpoints; configurable in `claw.toml`
+- Secret detection in `claw doctor` — warn when JWT secrets, API keys, or bearer tokens appear hardcoded in `claw.toml` (regex on known field names and common secret patterns)
+- SSRF audit — systematic review of all external HTTP paths beyond `browser_fetch`; document the full threat model and any mitigations added
+- Input validation review — adversarial pass over tool input schemas and REST request models; harden anything that processes user-supplied strings as paths, URLs, or IDs
+- `SECURITY.md` — responsible disclosure policy and contact
+
+### Phase 17 — Distribution & Onboarding
+*Installable by someone who isn't the author*
+
+**Goal:** A developer who has never seen the repo can go from zero to a running Claw instance in under 15 minutes.
+
+**Work:**
+- `LICENSE` — Apache 2.0
+- PyPI package — `pip install infinity-claw`; entry point `claw` registered via `pyproject.toml`
+- Docker image + `docker-compose.yml` — covers the common standalone configuration (single node, WebChat, SQLite stores mounted as volumes)
+- `claw init` wizard — interactive first-run that generates a starter `claw.toml` with sane defaults; prompts for agent name, API key, and channel selection; validates the result before writing
+- API version prefix — all REST endpoints move to `/v1/...`; old paths removed (not shimmed); stability guarantee documented in `API_REFERENCE.md`
+- `CONTRIBUTING.md` — development setup, test conventions, PR process
+
+### Phase 18 — Self-Hosted Observability
+*Fully observable with standard OSS tooling; no AINDY required*
+
+**Goal:** A self-hoster can wire Claw into their existing monitoring stack (Prometheus, Grafana, Loki, etc.) without running AINDY.
+
+**Work:**
+- Prometheus `/metrics` endpoint — turn counts, latency histograms, memory operation counts, active session gauge, Weave peer health; independent of AINDY; enabled by default in standalone mode
+- Structured JSON logging — machine-parseable output for log aggregators (Loki, Datadog, CloudWatch); configurable format (`text` vs `json`) in `claw.toml`
+- Log rotation config — `[logging] max_bytes` and `backup_count` in `claw.toml`; defaults that won't fill a disk on a long-running instance
+- Basic health dashboard in WebChat UI — active agents, session counts, last turn timestamps, Weave peer status; visible to authenticated admin users
+
+### Phase 19 — Ecosystem Surface
+*Makes Claw a platform others can extend*
+
+**Goal:** Third parties can build channel adapters, tool packs, and workspace templates without forking the core.
+
+**Work:**
+- Plugin/extension contract — documented interface for third-party channel adapters and tool packs; version-pinned API so plugins don't break on upgrades
+- Workspace templates — `claw workspace init --template <name>` bootstraps a workspace with predefined documents, tasks, and agent configs; built-in templates for common use cases (developer, research, writing)
+- `claw eval` — run a test prompt set against an agent and compare outputs; basic quality measurement for validating agent config changes
+- Python SDK — typed REST + WebSocket client library for driving Claw from external code; published to PyPI alongside the main package
+
+### Phase 20 — Managed Cloud *(if ever)*
+*Run Claw as a multi-tenant hosted service*
+
+**Decision criteria:** Only pursue if there is demonstrated external demand and a clear operator willing to run the infrastructure. This is a separate business decision, not a development milestone. The Weave architecture gives a head start on multi-node thinking, but multi-tenancy within a single node (per-user data isolation) is a distinct problem.
+
+**Major additions required:**
+- Per-user data isolation — memory, workspace, and weave stores scoped per user account, not per install; current agent-level namespacing is insufficient
+- User accounts — registration, login, OAuth integration
+- Billing integration
+- GDPR/compliance surface — data export and deletion on request
+- SLA operations — monitoring, alerting, on-call, incident response
+
+---
+
+## Deferred Weave Capabilities
+
+These extend the Weave layer but are not required for stable personal use or public release. They are documented here because the architecture already anticipates them and the decision to build them is straightforward when the need arises.
+
+### Option B — Workspace Replication
+*Push-based sync of workspace objects across Weave peers*
+
+**Problem:** The current Phase 13/14 model is pull-on-read. If a peer node is offline when an agent queries it, the tool fails silently. Replication would let each node maintain a local replica of subscribed peer workspaces.
+
+**Scope:**
+- `POST /weave/workspace/{agent_id}/sync` REST endpoint — accepts a batch of workspace objects (documents, tasks) from a peer
+- `WeaveClient.push_workspace(node, agent_id, objects)` — fan-out to registered peers after any local create or update
+- Background sync task in `ClawGateway` — fires after `ws_create_document`, `ws_create_task`, `ws_update_task` when peers are registered
+- Conflict resolution: last-write-wins (timestamp-based); no vector clock required at this scale
+- New `[weave] sync = true` config flag; disabled by default
+
+### Option C — Knowledge Federation
+*Pull-and-cache a peer node's knowledge index locally*
+
+**Problem:** `weave_search_knowledge` queries a remote FTS5 index live. If the peer is down, search fails. Federation would let a node mirror a peer's index for resilience and reduced latency.
+
+**Scope:**
+- `GET /weave/workspace/{agent_id}/knowledge/export` REST endpoint — streams all chunks as newline-delimited JSON
+- `WeaveClient.pull_knowledge_index(node, agent_id)` — fetches and upserts into the local `KnowledgeIndex` under a `peer:{node_id}:{agent_id}` workspace namespace
+- `claw weave sync-knowledge <node> <agent_id>` CLI command — one-shot pull
+- Schedule-based sync (not event-driven — FTS5 full sync is expensive); configurable `[weave] knowledge_sync_interval = 3600` in `claw.toml`
+
+---
+
 ## Future Considerations (unscheduled)
 
 - **Voice interface** — speech-to-text input, text-to-speech response delivery
 - **Mobile companion** — Infinity Claw control from iOS/Android (pairs via QR code + pairing protocol)
-- **Eval framework** — automated quality measurement across agent responses and memory recall
-- **Plugin ecosystem** — third-party channel adapters, knowledge ingestion parsers, tool packs
-- **Workspace templates** — bootstrap a workspace with predefined documents, memories, and agent configs for common use cases (developer workspace, research workspace, writing workspace)
+- **Eval framework** — automated quality measurement across agent responses and memory recall (stub exists in Phase 19; full implementation is a later concern)
+- **Plugin ecosystem** — third-party channel adapters, knowledge ingestion parsers, tool packs (contract defined in Phase 19; ecosystem growth is unscheduled)
+- **Workspace templates** — bootstrap a workspace with predefined documents, memories, and agent configs for common use cases (Phase 19 includes the mechanism; additional templates are unscheduled)
