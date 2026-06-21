@@ -11,6 +11,8 @@
 
 ## How to run
 
+Full `claw.toml` configuration reference: `docs/CONFIGURATION.md`. Channel adapter setup: `docs/CHANNELS.md`. Deployment guide: `docs/DEPLOYMENT.md`.
+
 ```powershell
 venv\Scripts\python.exe -m claw start          # gateway at http://127.0.0.1:18789/
 venv\Scripts\python.exe -m pytest tests/ -q    # test suite
@@ -84,6 +86,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 - Memory backend is set via `[aindy] memory_backend`: `"local"` (SQLite only), `"aindy"` (AINDY MAS, raises on failure), `"aindy-fallback"` (AINDY with automatic SQLite fallback).
 
 ### Knowledge layer (`claw/knowledge/`)
+See `docs/tutorials/02-knowledge-layer.md` for a setup walkthrough. `docs/KNOWLEDGE_MODEL.md` covers the design.
 - **Enabled** via `[knowledge] enabled = true` in `claw.toml`. Disabled by default.
 - `WorkspaceScanner` finds files in the agent workspace directory that are NOT in `ALL_WORKSPACE_FILES` (identity/boot files) and have a supported extension.
 - `ingest_file(path, workspace_id, chunk_size, chunk_overlap)` parses + chunks a file into `Chunk` objects (UUID chunk_id generated fresh each call).
@@ -118,6 +121,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 - `filesystem.paths`: when set, resolved path must fall within one entry (for future absolute-path tools; workspace-scoped tools are always permitted).
 
 ### Multi-agent coordination (`claw/coordination/`)
+See `docs/tutorials/01-multi-agent-setup.md` for a full walkthrough.
 - **Enabled** via `[coordination] enabled = true` in `claw.toml`. Disabled by default.
 - `AgentDispatcher.dispatch(HandoffRequest)` — runs an inner turn on the target agent via `ClawGateway.run_agent_turn()`. Session-persistent when `HandoffRequest.session_key` is set; stateless otherwise. No channel delivery. Emits `claw.delegation.started` / `claw.delegation.complete` / `claw.delegation.error` AINDY events (fire-and-forget) when `_aindy` is set and `emit_events=True`. Unknown-agent short-circuit returns error immediately with no events fired.
 - `run_agent_turn(agent_id, prompt, context="", session_key="")` on `ClawGateway` — builds the target agent's full system prompt (workspace + skills + memories + knowledge), runs one turn, returns response text. When `session_key` is provided, uses `ClawSessionManager` (lock + compact + prune pipeline) so history accumulates across calls. When empty, stateless (Phase 8 behavior). Returns `"[error: ...]"` on failure.
@@ -128,6 +132,7 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 - `HandoffResult.success` is `False` when response starts with `"[error:"`. Caller sees the error string in `.error`.
 
 ### Weave layer (`claw/weave/`)
+See `docs/tutorials/03-connecting-weave-nodes.md` for peer setup. REST endpoints are documented in `docs/API_REFERENCE.md`.
 - **Enabled** via `[weave] enabled = true` in `claw.toml`. Disabled by default.
 - `get_or_create_node_id(config_node_id, state_dir)` — returns config value if set; otherwise reads/creates `~/.claw/node_id` (or `<state_dir>/node_id`) as a persistent UUID.
 - `WeaveNodeStore(db_path)` — SQLite registry (`weave_nodes` table). `":memory:"` for tests. Methods: `register()`, `get()`, `list_nodes()`, `remove()`, `close()`. `register()` is `INSERT OR REPLACE` (upsert).
@@ -248,10 +253,43 @@ workflows/              Nodus DSL scripts (.nd)
 tests/                  Milestone test suites (218/218)
 skills/                 User skill files (empty by default)
 workspace/              Agent workspace placeholder (.gitkeep)
+docs/                   Project documentation (see docs/ reference below)
 ```
 
 `_build_claw_router(gateway, config) -> APIRouter` extracts all Claw-specific routes. `build_app()` gates `/health`, `/ready`, and observability behind `not config.aindy.mounted` then calls `app.include_router(_build_claw_router(...))`.  
 `register_claw_app(config_path, prefix)` in `claw/aindy/app_registration.py` is the mounted-mode entry point: starts the gateway, builds the router, calls `AINDY.platform_layer.registry.register_router(router)`, returns the started `ClawGateway`.
+
+## docs/ reference
+
+Operational docs (config, API, deployment, channels, tests, tutorials):
+
+| Document | Covers |
+|---|---|
+| `docs/CONFIGURATION.md` | Full `claw.toml` schema — every section, key, default, and env var |
+| `docs/API_REFERENCE.md` | REST + WebSocket endpoints, auth methods, request/response shapes |
+| `docs/DEPLOYMENT.md` | Standalone vs. mounted mode, process management (systemd/NSSM/pm2), nginx TLS, Weave multi-node setup |
+| `docs/CHANNELS.md` | Per-adapter setup and config — WebChat, Discord, Telegram, Slack, Matrix, Signal |
+| `docs/TEST_STRATEGY.md` | Suite layout (3 generations, 16 files, 218 functions), testing patterns, coverage gaps, guidelines for adding tests |
+| `docs/CHANGELOG.md` | Version history; v0.1.0 covers all 14 phases |
+| `docs/tutorials/01-multi-agent-setup.md` | Multi-agent coordination walkthrough: delegation, cross-agent memory, channel routing |
+| `docs/tutorials/02-knowledge-layer.md` | Knowledge indexing walkthrough: FTS5, retrieval, auto-reindex, chunk tuning |
+| `docs/tutorials/03-connecting-weave-nodes.md` | Weave peer setup: cross-node delegation, workspace federation, knowledge search |
+
+Design and architecture docs:
+
+| Document | Covers |
+|---|---|
+| `docs/CLAW_AINDY_INTEGRATION_PLAN.md` | Authoritative phase-by-phase AINDY integration plan (Phases 1–14 complete) |
+| `docs/ROADMAP.md` | Phase completion status and upcoming work |
+| `docs/ARCHITECTURE.md` | High-level architecture narrative |
+| `docs/AGENT_SPEC.md` | Agent identity and capability model |
+| `docs/WORKSPACE_SPEC.md` | Workspace object model spec |
+| `docs/KNOWLEDGE_MODEL.md` | Knowledge layer design |
+| `docs/PERMISSIONS_AND_SECURITY.md` | Security model and permissions design |
+| `docs/RUNTIME_CONTRACT.md` | Gateway/turn contract |
+| `docs/DECISIONS.md` | Architecture decision records |
+| `docs/ONBOARDING.md` | First-time setup guide |
+| `docs/OPENCLAW_NODUS_ARCHITECTURE.md` | OpenClaw to Nodus migration context |
 
 ## Nodus DSL (`workflows/*.nd`)
 
