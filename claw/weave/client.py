@@ -216,6 +216,80 @@ class WeaveClient:
             logger.debug("search_knowledge failed for node %s: %s", node.node_id, exc)
             return []
 
+    async def push_workspace(
+        self,
+        node: WeaveNode,
+        agent_id: str,
+        documents: list[dict],
+        tasks: list[dict],
+    ) -> bool:
+        """Push a batch of workspace objects to a peer node (fire-and-forget safe)."""
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                r = await client.post(
+                    f"{node.url.rstrip('/')}/weave/workspace/{agent_id}/sync",
+                    json={
+                        "from_node": self.local_node_id,
+                        "agent_id": agent_id,
+                        "documents": documents,
+                        "tasks": tasks,
+                    },
+                    headers=self._headers(node),
+                )
+                r.raise_for_status()
+                return True
+        except Exception as exc:
+            logger.debug("push_workspace failed for node %s: %s", node.node_id, exc)
+            return False
+
+    async def pull_knowledge_index(
+        self,
+        node: WeaveNode,
+        agent_id: str,
+        local_index: Any,  # KnowledgeIndex; typed as Any to avoid circular import
+    ) -> int:
+        """Fetch all knowledge chunks from peer and replace local peer namespace.
+
+        Chunks are stored under workspace_id='peer:{node_id}:{agent_id}'.
+        Returns count of chunks synced; 0 on failure (swallows all exceptions).
+        """
+        peer_ns = f"peer:{node.node_id}:{agent_id}"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                r = await client.get(
+                    f"{node.url.rstrip('/')}/weave/workspace/{agent_id}/knowledge/export",
+                    headers=self._headers(node),
+                )
+                r.raise_for_status()
+                chunks_raw = r.json().get("chunks", [])
+
+            await asyncio.to_thread(local_index.clear_workspace, peer_ns)
+
+            if not chunks_raw:
+                return 0
+
+            from claw.knowledge.ingestion import Chunk as _Chunk
+            chunks = [
+                _Chunk(
+                    chunk_id=c.get("chunk_id", ""),
+                    source_file=c.get("source_file", ""),
+                    workspace_id=peer_ns,
+                    content=c["content"],
+                    position=int(c.get("position", 0)),
+                )
+                for c in chunks_raw
+                if c.get("content")
+            ]
+            await asyncio.to_thread(local_index.upsert_many, chunks)
+            return len(chunks)
+
+        except Exception as exc:
+            logger.debug(
+                "pull_knowledge_index failed node=%s agent=%s: %s",
+                node.node_id, agent_id, exc,
+            )
+            return 0
+
     async def register_self(self, remote: WeaveNode, self_node: WeaveNode) -> bool:
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:

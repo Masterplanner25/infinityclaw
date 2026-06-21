@@ -167,6 +167,8 @@ class WeaveConfig(BaseModel):
     enabled: bool = False
     node_id: str = ""   # empty = auto-generate UUID on first start
     db_path: str = ""   # empty -> ~/.claw/weave.db
+    sync: bool = False  # push-based workspace replication to registered peers
+    knowledge_sync_interval: int = 0  # seconds between knowledge federation pulls; 0 = disabled
 
 
 class CronJobConfig(BaseModel):

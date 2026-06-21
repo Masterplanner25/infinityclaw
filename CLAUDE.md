@@ -7,7 +7,7 @@
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
 - Python: 3.11+ (venv at `C:\dev\claw\venv`)
-- Tests: `pytest tests/ -q` → 240/240 (never break this baseline)
+- Tests: `pytest tests/ -q` → 285/285 (never break this baseline)
 
 ## How to run
 
@@ -231,6 +231,15 @@ See `docs/tutorials/03-connecting-weave-nodes.md` for peer setup. REST endpoints
 | `knowledge_retriever.retrieve()` has no `limit` param | `KnowledgeRetriever.retrieve(query, workspace_id)` uses `self._top_k` set at construction — no per-call limit. The Weave knowledge endpoint calls `gateway.knowledge_index.search(q, agent_id, limit)` directly via `asyncio.to_thread` to support a caller-supplied limit. |
 | `Chunk` is a dataclass, not Pydantic | `Chunk` is decorated with `@dataclass` (in `claw/knowledge/ingestion.py`). Serialize it with `dataclasses.asdict(c)`, NOT `.model_dump()`. Using `.model_dump()` will raise `AttributeError`. |
 | `list_all_agents` skip-failed-nodes pattern | `asyncio.gather(..., return_exceptions=True)` returns exceptions as values in the results list. Check `isinstance(agents, list)` (not `not isinstance(agents, Exception)`) to filter them out — a failed node yields an `Exception` object, not a list. |
+| Weave sync is loop-safe | `POST /weave/workspace/{agent_id}/sync` calls `workspace_manager.sync_document()` and `upsert_task()` directly — NOT the tool handlers — so the sync hook never fires on incoming replicas. No re-broadcast loop is possible. |
+| `sync_document` vs `upsert_document` | `upsert_document` matches on `(workspace_id, name)` — the agent-facing write (same name replaces body, original ID preserved). `sync_document` matches on `id` with last-write-wins by `updated_at` — replication only. Never call `sync_document` from tool handlers. |
+| `upsert_task` vs `create_task` | `create_task` is a plain INSERT — fails on duplicate ID. `upsert_task` is an ID-based LWW upsert for Weave replication. Use `create_task` for agent writes, `upsert_task` only for incoming sync. |
+| Weave sync hook in `register_workspace_tools` | `register_workspace_tools(registry, manager, sync_hook=None)` — the optional `sync_hook` is called via `asyncio.create_task` (fire-and-forget) after successful `ws_create_document`, `ws_create_task`, `ws_update_task`. Hook signature: `async (agent_id: str, obj_type: str, obj: dict) -> None`. Wired in `startup()` only when `weave.sync = True`. |
+| `KnowledgeIndex.export_chunks(workspace_id)` | Returns all chunks for a workspace ordered by `(source_file, position)`. Used by the Weave knowledge export endpoint and `pull_knowledge_index`. |
+| `WeaveClient.pull_knowledge_index(node, agent_id, local_index)` | Fetches export from peer, stores under `peer:{node_id}:{agent_id}` namespace in `local_index`. Calls `clear_workspace` then `upsert_many` via `asyncio.to_thread`. Returns chunk count (0 on any failure). Skips chunks with empty/missing `content`. |
+| Knowledge export endpoint vs search endpoint | Both in the `if config.knowledge.enabled` block inside `if config.weave.enabled`. Export is `GET /weave/workspace/{agent_id}/knowledge/export` (no params); search is `GET /weave/workspace/{agent_id}/knowledge?q=...`. |
+| Weave knowledge sync background task | Created in `startup()` when `weave.enabled AND knowledge_sync_interval > 0 AND knowledge_index is not None`. First sync fires after `knowledge_sync_interval` seconds (not on startup). Stored in `_listener_tasks["weave-knowledge-sync"]` for clean cancellation. |
+| `peer:{node_id}:{agent_id}` namespace | All federated knowledge chunks land in this `workspace_id`. Keeps local and remote indexes cleanly separated. Search against this namespace for offline-resilient retrieval. |
 
 ## Package layout
 
@@ -373,4 +382,4 @@ Sub-references: `.claude/commands/nodus/` (quickstart, errors, examples, idioms,
 - Phase 13: Cross-node workspace federation — pull-on-read, peer-trust model; `WeaveClient.fetch_documents/fetch_document/fetch_tasks`; `weave_list_workspace_documents` / `weave_read_document` / `weave_list_workspace_tasks` tools; `GET /weave/workspace/{agent_id}/documents[/{doc_id}]` + `GET /weave/workspace/{agent_id}/tasks` REST endpoints (gated on both `weave.enabled` and `workspace.enabled`)
 - Phase 14: Weave-wide agent discovery + cross-node writes — `WeaveClient.list_all_agents` (concurrent, skip-failed-nodes); `create_document`, `create_task`, `update_task`, `search_knowledge`; 5 new tools (`weave_discover_agents`, `weave_create_document`, `weave_create_task`, `weave_update_task`, `weave_search_knowledge`); write REST endpoints (`POST /weave/workspace/{agent_id}/documents|tasks`, `PATCH /weave/workspace/{agent_id}/tasks/{task_id}`); knowledge REST endpoint (`GET /weave/workspace/{agent_id}/knowledge`; uses `index.search()` directly, serializes `Chunk` via `dataclasses.asdict()`)
 
-Phase 15 (operational hardening) is complete. Deferred Weave capabilities (workspace replication, knowledge federation) and the public product path (Phases 16–20) are documented in `docs/ROADMAP.md`.
+Phases 1–15 are complete. Weave Option B (workspace replication) and Option C (knowledge federation) are complete. The public product path (Phases 16–20) is documented in `docs/ROADMAP.md`.

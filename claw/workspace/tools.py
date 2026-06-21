@@ -7,6 +7,7 @@ workspace (requires an explicit permission grant via 'claw workspace share').
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -28,9 +29,13 @@ _WORKSPACE_TOOLS = {
 def register_workspace_tools(
     registry: "ToolRegistry",
     workspace_manager: "WorkspaceManager",
+    sync_hook=None,
 ) -> None:
-    """Register workspace object tools (once) into the shared registry."""
+    """Register workspace object tools (once) into the shared registry.
 
+    sync_hook: optional async callable(agent_id, obj_type, obj_dict) fired after
+    successful writes for push-based Weave replication.
+    """
     registry.register(
         name="ws_create_task",
         description=(
@@ -61,7 +66,7 @@ def register_workspace_tools(
             },
             "required": ["title"],
         },
-        handler=_make_create_task(workspace_manager),
+        handler=_make_create_task(workspace_manager, sync_hook),
     )
 
     registry.register(
@@ -119,7 +124,7 @@ def register_workspace_tools(
             },
             "required": ["task_id"],
         },
-        handler=_make_update_task(workspace_manager),
+        handler=_make_update_task(workspace_manager, sync_hook),
     )
 
     registry.register(
@@ -154,7 +159,7 @@ def register_workspace_tools(
             },
             "required": ["name", "body"],
         },
-        handler=_make_create_document(workspace_manager),
+        handler=_make_create_document(workspace_manager, sync_hook),
     )
 
     registry.register(
@@ -211,7 +216,7 @@ def is_workspace_tool(name: str) -> bool:
 # Handler factories — agent_id comes from injected _agent_id key
 # ------------------------------------------------------------------
 
-def _make_create_task(manager: "WorkspaceManager"):
+def _make_create_task(manager: "WorkspaceManager", sync_hook=None):
     async def handler(input: dict) -> str:
         from claw.workspace.model import Task
         calling_agent = input.get("_agent_id", "main")
@@ -233,6 +238,17 @@ def _make_create_task(manager: "WorkspaceManager"):
                 priority=int(input.get("priority", 0)),
             )
             task = await manager.create_task(task)
+            if sync_hook is not None:
+                asyncio.create_task(sync_hook(target_agent, "task", {
+                    "id": task.id,
+                    "workspace_id": task.workspace_id,
+                    "title": task.title,
+                    "body": task.body,
+                    "status": task.status,
+                    "priority": task.priority,
+                    "created_at": task.created_at.isoformat(),
+                    "updated_at": task.updated_at.isoformat(),
+                }))
             return json.dumps({
                 "id": task.id,
                 "title": task.title,
@@ -277,7 +293,7 @@ def _make_list_tasks(manager: "WorkspaceManager"):
     return handler
 
 
-def _make_update_task(manager: "WorkspaceManager"):
+def _make_update_task(manager: "WorkspaceManager", sync_hook=None):
     async def handler(input: dict) -> str:
         calling_agent = input.get("_agent_id", "main")
         task_id = input.get("task_id", "").strip()
@@ -299,13 +315,24 @@ def _make_update_task(manager: "WorkspaceManager"):
             task = await manager.update_task(task_id, **fields)
             if not task:
                 return json.dumps({"error": "task not found", "task_id": task_id})
+            if sync_hook is not None:
+                asyncio.create_task(sync_hook(task.workspace_id, "task", {
+                    "id": task.id,
+                    "workspace_id": task.workspace_id,
+                    "title": task.title,
+                    "body": task.body,
+                    "status": task.status,
+                    "priority": task.priority,
+                    "created_at": task.created_at.isoformat(),
+                    "updated_at": task.updated_at.isoformat(),
+                }))
             return json.dumps({"id": task.id, "title": task.title, "status": task.status})
         except Exception as exc:
             return json.dumps({"error": str(exc)})
     return handler
 
 
-def _make_create_document(manager: "WorkspaceManager"):
+def _make_create_document(manager: "WorkspaceManager", sync_hook=None):
     async def handler(input: dict) -> str:
         from claw.workspace.model import Document
         calling_agent = input.get("_agent_id", "main")
@@ -330,6 +357,16 @@ def _make_create_document(manager: "WorkspaceManager"):
                 updated_at=now,
             )
             doc = await manager.upsert_document(doc)
+            if sync_hook is not None:
+                asyncio.create_task(sync_hook(target_agent, "document", {
+                    "id": doc.id,
+                    "workspace_id": doc.workspace_id,
+                    "name": doc.name,
+                    "content_type": doc.content_type,
+                    "body": doc.body,
+                    "created_at": doc.created_at.isoformat(),
+                    "updated_at": doc.updated_at.isoformat(),
+                }))
             return json.dumps({
                 "id": doc.id,
                 "name": doc.name,

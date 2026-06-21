@@ -85,6 +85,9 @@ def main() -> None:
                                  help="Skip reachability ping before registering")
     p_weave_disconnect = weave_sub.add_parser("disconnect", help="Remove a registered peer node")
     p_weave_disconnect.add_argument("node_id", help="Node ID to remove")
+    p_weave_sync_k = weave_sub.add_parser("sync-knowledge", help="Pull and cache a peer node's knowledge index")
+    p_weave_sync_k.add_argument("node_id", help="Node ID of the peer (from claw weave nodes)")
+    p_weave_sync_k.add_argument("agent_id", help="Agent ID whose knowledge to sync")
 
     # cron
     p_cron = sub.add_parser("cron", help="Manage cron jobs")
@@ -894,6 +897,8 @@ def _cmd_weave(args) -> None:
         _cmd_weave_connect(args, config)
     elif cmd == "disconnect":
         _cmd_weave_disconnect(args, config)
+    elif cmd == "sync-knowledge":
+        _cmd_weave_sync_knowledge(args, config)
     else:
         _cmd_weave_status(args, config)
 
@@ -1021,6 +1026,55 @@ def _cmd_weave_disconnect(args, config) -> None:
     else:
         print(f"Node {node_id!r} not found in registry.")
         sys.exit(1)
+
+
+def _cmd_weave_sync_knowledge(args, config) -> None:
+    import asyncio as _asyncio
+    from pathlib import Path
+    from claw.weave.registry import WeaveNodeStore
+    from claw.weave.client import WeaveClient
+    from claw.weave.model import get_or_create_node_id
+
+    if not config.knowledge.enabled:
+        print("Knowledge layer is disabled.")
+        print("Set [knowledge] enabled = true in claw.toml to enable it.")
+        sys.exit(1)
+
+    state_dir = Path(config.state_dir).expanduser()
+    db_path = config.weave.db_path or str(state_dir / "weave.db")
+
+    if not Path(db_path).exists():
+        print("No weave database found. Use 'claw weave connect' to register a peer first.")
+        sys.exit(1)
+
+    store = WeaveNodeStore(db_path)
+    node = store.get(args.node_id)
+    store.close()
+
+    if node is None:
+        print(f"Node {args.node_id!r} not found. Use 'claw weave nodes' to list registered peers.")
+        sys.exit(1)
+
+    knowledge_db = config.knowledge.db_path or str(state_dir / "knowledge.db")
+    from claw.knowledge.index import KnowledgeIndex
+    index = KnowledgeIndex(knowledge_db)
+
+    local_node_id = get_or_create_node_id(config.weave.node_id, str(state_dir))
+    client = WeaveClient(local_node_id)
+
+    async def _pull():
+        return await client.pull_knowledge_index(node, args.agent_id, index)
+
+    count = _asyncio.run(_pull())
+    index.close()
+
+    if count == 0:
+        print(f"No chunks synced from node {node.node_id!r} agent {args.agent_id!r}.")
+        print("The peer may be offline, have no knowledge indexed, or knowledge export may be disabled.")
+    else:
+        peer_ns = f"peer:{node.node_id}:{args.agent_id}"
+        print(f"Synced {count} chunk(s) from node {node.node_id!r} agent {args.agent_id!r}.")
+        print(f"Stored under workspace '{peer_ns}'.")
 
 
 def _cmd_cron(args) -> None:

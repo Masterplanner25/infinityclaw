@@ -47,6 +47,13 @@ class WeaveUpdateTaskRequest(BaseModel):
     priority: Optional[int] = None
 
 
+class WeaveSyncRequest(BaseModel):
+    from_node: str
+    agent_id: str
+    documents: list[dict] = []
+    tasks: list[dict] = []
+
+
 def get_or_create_node_id(config_node_id: str, state_dir: str = "") -> str:
     """Return config_node_id if set; otherwise read/create a persistent UUID on disk."""
     if config_node_id:

@@ -79,6 +79,10 @@ class WorkspaceManager:
     # Document
     # ------------------------------------------------------------------
 
+    async def sync_document(self, doc: Document) -> Document:
+        """ID-based upsert with last-write-wins (for Weave replication)."""
+        return await asyncio.to_thread(self._store.sync_document, doc)
+
     async def upsert_document(self, doc: Document) -> Document:
         return await asyncio.to_thread(self._store.upsert_document, doc)
 
@@ -91,6 +95,10 @@ class WorkspaceManager:
     # ------------------------------------------------------------------
     # Task
     # ------------------------------------------------------------------
+
+    async def upsert_task(self, task: Task) -> Task:
+        """ID-based upsert with last-write-wins (for Weave replication)."""
+        return await asyncio.to_thread(self._store.upsert_task, task)
 
     async def create_task(self, task: Task) -> Task:
         return await asyncio.to_thread(self._store.create_task, task)

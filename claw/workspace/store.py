@@ -158,6 +158,27 @@ class WorkspaceStore:
     # Document
     # ------------------------------------------------------------------
 
+    def sync_document(self, doc: Document) -> Document:
+        """ID-based upsert with last-write-wins by updated_at (used by Weave sync)."""
+        existing = self.get_document(doc.id)
+        if existing is not None:
+            if doc.updated_at <= existing.updated_at:
+                return existing
+            self._conn.execute(
+                "UPDATE ws_documents SET name=?, content_type=?, body=?, updated_at=? WHERE id=?",
+                (doc.name, doc.content_type, doc.body, _ts(doc.updated_at), doc.id),
+            )
+            self._conn.commit()
+            return self.get_document(doc.id) or doc
+        self._conn.execute(
+            "INSERT INTO ws_documents (id, workspace_id, name, content_type, body, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (doc.id, doc.workspace_id, doc.name, doc.content_type, doc.body,
+             _ts(doc.created_at), _ts(doc.updated_at)),
+        )
+        self._conn.commit()
+        return doc
+
     def upsert_document(self, doc: Document) -> Document:
         existing = self._conn.execute(
             "SELECT id FROM ws_documents WHERE workspace_id = ? AND name = ?",
@@ -217,6 +238,27 @@ class WorkspaceStore:
     # ------------------------------------------------------------------
     # Task
     # ------------------------------------------------------------------
+
+    def upsert_task(self, task: Task) -> Task:
+        """ID-based upsert with last-write-wins by updated_at (used by Weave sync)."""
+        existing = self.get_task(task.id)
+        if existing is not None:
+            if task.updated_at <= existing.updated_at:
+                return existing
+            self._conn.execute(
+                "UPDATE ws_tasks SET title=?, body=?, status=?, priority=?, updated_at=? WHERE id=?",
+                (task.title, task.body, task.status, task.priority, _ts(task.updated_at), task.id),
+            )
+            self._conn.commit()
+            return self.get_task(task.id) or task
+        self._conn.execute(
+            "INSERT INTO ws_tasks (id, workspace_id, title, body, status, priority, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (task.id, task.workspace_id, task.title, task.body,
+             task.status, task.priority, _ts(task.created_at), _ts(task.updated_at)),
+        )
+        self._conn.commit()
+        return task
 
     def create_task(self, task: Task) -> Task:
         self._conn.execute(

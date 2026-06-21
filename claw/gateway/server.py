@@ -242,7 +242,31 @@ class ClawGateway:
             from claw.workspace.tools import register_workspace_tools
             for agent_cfg in agents:
                 await self.workspace_manager.ensure_workspace(agent_cfg.id, agent_cfg.name)
-            register_workspace_tools(self.tool_registry, self.workspace_manager)
+
+            _ws_sync_hook = None
+            if (self.config.weave.enabled and self.config.weave.sync
+                    and self.weave_store is not None and self.weave_client is not None):
+                _weave_store = self.weave_store
+                _weave_client = self.weave_client
+
+                async def _ws_sync_hook(agent_id: str, obj_type: str, obj: dict) -> None:
+                    try:
+                        nodes = _weave_store.list_nodes()
+                        if not nodes:
+                            return
+                        docs = [obj] if obj_type == "document" else []
+                        tasks = [obj] if obj_type == "task" else []
+                        await asyncio.gather(
+                            *[_weave_client.push_workspace(n, agent_id, docs, tasks)
+                              for n in nodes],
+                            return_exceptions=True,
+                        )
+                    except Exception as exc:
+                        logger.debug("[weave-sync] hook error: %s", exc)
+
+                logger.info("[gateway] weave workspace sync hook enabled")
+
+            register_workspace_tools(self.tool_registry, self.workspace_manager, sync_hook=_ws_sync_hook)
             logger.info("[gateway] workspace object tools registered")
 
         # Knowledge file watcher — auto-reindex on workspace changes (Phase 6 follow-up)
@@ -280,6 +304,43 @@ class ClawGateway:
             from claw.weave.tools import register_weave_tools
             register_weave_tools(self.tool_registry, self.weave_store, self.weave_client)
             logger.info("[gateway] weave tools registered node_id=%s", self._weave_node_id)
+
+        # Weave knowledge sync — periodic pull of peer knowledge indexes
+        if (self.config.weave.enabled and self.config.weave.knowledge_sync_interval > 0
+                and self.knowledge_index is not None
+                and self.weave_store is not None and self.weave_client is not None):
+            _ki = self.knowledge_index
+            _ws = self.weave_store
+            _wc = self.weave_client
+            _interval = self.config.weave.knowledge_sync_interval
+
+            async def _knowledge_sync_loop() -> None:
+                while True:
+                    await asyncio.sleep(_interval)
+                    try:
+                        nodes = _ws.list_nodes()
+                        for node in nodes:
+                            remote_agents = await _wc.list_agents(node)
+                            for agent_info in remote_agents:
+                                count = await _wc.pull_knowledge_index(
+                                    node, agent_info["agent_id"], _ki
+                                )
+                                logger.info(
+                                    "[weave-ksync] synced node=%s agent=%s chunks=%d",
+                                    node.node_id, agent_info["agent_id"], count,
+                                )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.debug("[weave-ksync] sync round error: %s", exc)
+
+            _ksync_task = asyncio.create_task(
+                _knowledge_sync_loop(), name="weave-knowledge-sync"
+            )
+            self._listener_tasks["weave-knowledge-sync"] = _ksync_task
+            logger.info(
+                "[gateway] weave knowledge sync started interval=%ds", _interval
+            )
 
         # Cron manager
         try:
@@ -903,7 +964,58 @@ def _build_claw_router(gateway: ClawGateway, config: ClawConfig) -> APIRouter:
                 updated = await gateway.workspace_manager.update_task(task_id, **fields)
                 return updated.model_dump(mode="json")
 
-        # Knowledge federation endpoint — only when knowledge is also enabled
+        # Workspace sync endpoint — push-based replication (only when sync enabled)
+        if config.weave.sync:
+            from claw.weave.model import WeaveSyncRequest as _WSSyncReq
+            from datetime import datetime as _datetime
+            import uuid as _uuid
+
+            @router.post("/weave/workspace/{agent_id}/sync", include_in_schema=False)
+            async def weave_workspace_sync(agent_id: str, req: _WSSyncReq):
+                await gateway.workspace_manager.ensure_workspace(agent_id)
+                doc_count = 0
+                task_count = 0
+                for d in req.documents:
+                    try:
+                        from claw.workspace.model import Document as _SyncDoc
+                        doc = _SyncDoc(
+                            id=d.get("id", str(_uuid.uuid4())),
+                            workspace_id=agent_id,
+                            name=d["name"],
+                            content_type=d.get("content_type", "text"),
+                            body=d.get("body", ""),
+                            created_at=_datetime.fromisoformat(d["created_at"]) if "created_at" in d else _datetime.utcnow(),
+                            updated_at=_datetime.fromisoformat(d["updated_at"]) if "updated_at" in d else _datetime.utcnow(),
+                        )
+                        await gateway.workspace_manager.sync_document(doc)
+                        doc_count += 1
+                    except Exception as _exc:
+                        logger.debug("[weave-sync] skip document: %s", _exc)
+                for t in req.tasks:
+                    try:
+                        from claw.workspace.model import Task as _SyncTask
+                        task = _SyncTask(
+                            id=t.get("id", str(_uuid.uuid4())),
+                            workspace_id=agent_id,
+                            title=t["title"],
+                            body=t.get("body", ""),
+                            status=t.get("status", "open"),
+                            priority=int(t.get("priority", 0)),
+                            created_at=_datetime.fromisoformat(t["created_at"]) if "created_at" in t else _datetime.utcnow(),
+                            updated_at=_datetime.fromisoformat(t["updated_at"]) if "updated_at" in t else _datetime.utcnow(),
+                        )
+                        await gateway.workspace_manager.upsert_task(task)
+                        task_count += 1
+                    except Exception as _exc:
+                        logger.debug("[weave-sync] skip task: %s", _exc)
+                return {
+                    "synced": True,
+                    "agent_id": agent_id,
+                    "documents": doc_count,
+                    "tasks": task_count,
+                }
+
+        # Knowledge federation endpoints — only when knowledge is also enabled
         if config.knowledge.enabled and gateway.knowledge_retriever is not None:
             @router.get("/weave/workspace/{agent_id}/knowledge", include_in_schema=False)
             async def weave_workspace_knowledge(agent_id: str, q: str, limit: int = 5):
@@ -911,6 +1023,18 @@ def _build_claw_router(gateway: ClawGateway, config: ClawConfig) -> APIRouter:
                 import dataclasses as _dc
                 chunks = await _asyncio.to_thread(
                     gateway.knowledge_index.search, q, agent_id, limit
+                )
+                return {
+                    "agent_id": agent_id,
+                    "chunks": [_dc.asdict(c) for c in chunks],
+                }
+
+            @router.get("/weave/workspace/{agent_id}/knowledge/export", include_in_schema=False)
+            async def weave_workspace_knowledge_export(agent_id: str):
+                import asyncio as _asyncio
+                import dataclasses as _dc
+                chunks = await _asyncio.to_thread(
+                    gateway.knowledge_index.export_chunks, agent_id
                 )
                 return {
                     "agent_id": agent_id,

@@ -327,28 +327,15 @@ Phase 15 closes the gap between "feature complete" and "reliably runnable." No n
 
 These extend the Weave layer but are not required for stable personal use or public release. They are documented here because the architecture already anticipates them and the decision to build them is straightforward when the need arises.
 
-### Option B — Workspace Replication
+### Option B — Workspace Replication ✓ COMPLETE
 *Push-based sync of workspace objects across Weave peers*
 
-**Problem:** The current Phase 13/14 model is pull-on-read. If a peer node is offline when an agent queries it, the tool fails silently. Replication would let each node maintain a local replica of subscribed peer workspaces.
+**Implemented:** `[weave] sync = true` config flag (disabled by default). `WeaveClient.push_workspace()` fans out after local writes. `POST /weave/workspace/{agent_id}/sync` receives batches from peers. `WorkspaceStore.sync_document()` and `upsert_task()` apply last-write-wins by `updated_at`. Sync hook wired into `ws_create_document`, `ws_create_task`, `ws_update_task` tools via fire-and-forget `asyncio.create_task`. Incoming sync paths do not trigger re-sync (loop-safe). 23 tests in `tests/test_weave_sync.py`.
 
-**Scope:**
-- `POST /weave/workspace/{agent_id}/sync` REST endpoint — accepts a batch of workspace objects (documents, tasks) from a peer
-- `WeaveClient.push_workspace(node, agent_id, objects)` — fan-out to registered peers after any local create or update
-- Background sync task in `ClawGateway` — fires after `ws_create_document`, `ws_create_task`, `ws_update_task` when peers are registered
-- Conflict resolution: last-write-wins (timestamp-based); no vector clock required at this scale
-- New `[weave] sync = true` config flag; disabled by default
-
-### Option C — Knowledge Federation
+### Option C — Knowledge Federation ✓ COMPLETE
 *Pull-and-cache a peer node's knowledge index locally*
 
-**Problem:** `weave_search_knowledge` queries a remote FTS5 index live. If the peer is down, search fails. Federation would let a node mirror a peer's index for resilience and reduced latency.
-
-**Scope:**
-- `GET /weave/workspace/{agent_id}/knowledge/export` REST endpoint — streams all chunks as newline-delimited JSON
-- `WeaveClient.pull_knowledge_index(node, agent_id)` — fetches and upserts into the local `KnowledgeIndex` under a `peer:{node_id}:{agent_id}` workspace namespace
-- `claw weave sync-knowledge <node> <agent_id>` CLI command — one-shot pull
-- Schedule-based sync (not event-driven — FTS5 full sync is expensive); configurable `[weave] knowledge_sync_interval = 3600` in `claw.toml`
+**Implemented:** `GET /weave/workspace/{agent_id}/knowledge/export` endpoint (gated on `weave.enabled AND knowledge.enabled`) returns all `Chunk` dicts via `KnowledgeIndex.export_chunks()`. `WeaveClient.pull_knowledge_index(node, agent_id, local_index)` fetches and replaces `peer:{node_id}:{agent_id}` namespace (clear + upsert_many via asyncio.to_thread; skips empty-content chunks; returns count). `claw weave sync-knowledge <node_id> <agent_id>` CLI for one-shot pulls. Background `_knowledge_sync_loop` task started in `ClawGateway.startup()` when `weave.knowledge_sync_interval > 0`; first sync fires after one interval (not on startup); stored in `_listener_tasks["weave-knowledge-sync"]` for clean shutdown. 22 tests in `tests/test_weave_knowledge_sync.py`.
 
 ---
 

@@ -106,6 +106,25 @@ class KnowledgeIndex:
     # Read
     # ------------------------------------------------------------------
 
+    def export_chunks(self, workspace_id: str) -> list[Chunk]:
+        """Return all chunks for *workspace_id* ordered by source and position."""
+        rows = self._conn.execute(
+            "SELECT chunk_id, workspace_id, source_file, position, content "
+            "FROM knowledge_chunks WHERE workspace_id = ? "
+            "ORDER BY source_file, position",
+            (workspace_id,),
+        ).fetchall()
+        return [
+            Chunk(
+                chunk_id=r[0],
+                workspace_id=r[1],
+                source_file=r[2],
+                position=r[3],
+                content=r[4],
+            )
+            for r in rows
+        ]
+
     def search(self, query: str, workspace_id: str, top_k: int = 5) -> list[Chunk]:
         """Return top-K relevant chunks for *query* in *workspace_id*."""
         safe_q = fts5_query(query)
