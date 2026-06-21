@@ -7,7 +7,7 @@
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
 - Python: 3.11+ (venv at `C:\dev\claw\venv`)
-- Tests: `pytest tests/ -q` → 200/200 (never break this baseline)
+- Tests: `pytest tests/ -q` → 218/218 (never break this baseline)
 
 ## How to run
 
@@ -131,9 +131,9 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 - **Enabled** via `[weave] enabled = true` in `claw.toml`. Disabled by default.
 - `get_or_create_node_id(config_node_id, state_dir)` — returns config value if set; otherwise reads/creates `~/.claw/node_id` (or `<state_dir>/node_id`) as a persistent UUID.
 - `WeaveNodeStore(db_path)` — SQLite registry (`weave_nodes` table). `":memory:"` for tests. Methods: `register()`, `get()`, `list_nodes()`, `remove()`, `close()`. `register()` is `INSERT OR REPLACE` (upsert).
-- `WeaveClient(local_node_id, timeout=10.0)` — `httpx.AsyncClient` for cross-node calls. Methods: `ping(node)->bool`, `list_agents(node)->list[dict]`, `delegate(node, agent_id, prompt, ...)->str`, `register_self(remote, self_node)->bool`. Returns `"[error:...]"` on network failures; never raises.
-- **Tools** (`claw/weave/tools.py`): `weave_delegate`, `weave_list_nodes`, `weave_list_agents`. Registered via `register_weave_tools()` in `startup()`. `_session_key` injected by `scoped_executor`; `weave_delegate` derives `weave:{from_node}:{caller_session}:{to_node}:{agent_id}` as the cross-node session key.
-- `is_weave_tool(name)` — True for the three weave tools; used by `scoped_executor`/`_inner_exec` injection check (same pattern as `is_memory_tool` etc.).
+- `WeaveClient(local_node_id, timeout=10.0)` — `httpx.AsyncClient` for cross-node calls. Phase 12 methods: `ping`, `list_agents`, `delegate`, `register_self`. Phase 13 additions: `fetch_documents`, `fetch_document` (returns `None` on 404), `fetch_tasks`. Phase 14 additions: `list_all_agents` (concurrent `asyncio.gather` across all nodes; skips failures), `create_document`, `create_task`, `update_task` (returns `None` on 404), `search_knowledge`. All methods swallow exceptions and return safe defaults; never raise.
+- **Tools** (`claw/weave/tools.py`): 11 tools total — `weave_delegate`, `weave_list_nodes`, `weave_list_agents` (Phase 12); `weave_list_workspace_documents`, `weave_read_document`, `weave_list_workspace_tasks` (Phase 13); `weave_discover_agents`, `weave_create_document`, `weave_create_task`, `weave_update_task`, `weave_search_knowledge` (Phase 14). Registered via `register_weave_tools()` in `startup()`. `_session_key` injected by `scoped_executor`; `weave_delegate` derives `weave:{from_node}:{caller_session}:{to_node}:{agent_id}` as the cross-node session key.
+- `is_weave_tool(name)` — True for all 11 weave tools; used by `scoped_executor`/`_inner_exec` injection check (same pattern as `is_memory_tool` etc.).
 - **REST endpoints** in `_build_claw_router` (only when `config.weave.enabled`):
   - `GET /weave/agents` — returns `{node_id, agents: [{agent_id, name}]}`
   - `GET /weave/nodes` — returns registered peer list
@@ -147,6 +147,12 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
   - REST (requires both `weave.enabled` AND `workspace.enabled`): `GET /weave/workspace/{agent_id}/documents`, `GET /weave/workspace/{agent_id}/documents/{doc_id}`, `GET /weave/workspace/{agent_id}/tasks?status=...`
   - `fetch_document` returns `None` on 404 (not an error string); tool handler converts `None` → `{"error": "..."}` JSON
   - Document endpoint verifies `doc.workspace_id == agent_id` before returning — prevents cross-workspace leakage via guessed doc IDs
+- **Weave-wide agent discovery and cross-node writes** (Phase 14):
+  - `WeaveClient.list_all_agents(nodes)` — `asyncio.gather(..., return_exceptions=True)` across all nodes; `isinstance(agents, list)` filters out exceptions; adds `node_id` + `node_url` attribution to each entry
+  - `WeaveClient`: `create_document`, `create_task`, `update_task` (returns `None` on 404), `search_knowledge`
+  - Tools: `weave_discover_agents` (no required params — queries all registered nodes), `weave_create_document`, `weave_create_task`, `weave_update_task`, `weave_search_knowledge`
+  - REST write endpoints (gated on `workspace.enabled`): `POST /weave/workspace/{agent_id}/documents`, `POST /weave/workspace/{agent_id}/tasks`, `PATCH /weave/workspace/{agent_id}/tasks/{task_id}` — use `WeaveCreateDocumentRequest`, `WeaveCreateTaskRequest`, `WeaveUpdateTaskRequest` models
+  - Knowledge endpoint (gated on `knowledge.enabled`): `GET /weave/workspace/{agent_id}/knowledge?q=...&limit=...` — calls `gateway.knowledge_index.search()` directly via `asyncio.to_thread` (NOT `knowledge_retriever.retrieve()`, which has no per-call `limit` param); serializes `Chunk` dataclass via `dataclasses.asdict()`
 
 ### Knowledge watcher (`claw/knowledge/watcher.py`)
 - `KnowledgeWatcher.watch(agents)` is a background coroutine started in `ClawGateway.startup()` when knowledge is enabled.
@@ -217,6 +223,9 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | `claw weave connect` requires live remote | `connect` always calls `GET /weave/agents` on the remote to fetch its `node_id`. `--no-ping` only skips the subsequent `WeaveClient.ping()` call — it does NOT bypass the node_id fetch. If the remote is unreachable, `connect` will always fail; there is no offline-registration path. |
 | Workspace federation double-gate | `/weave/workspace/*` endpoints are only registered when BOTH `config.weave.enabled` AND `config.workspace.enabled` are true. Weave alone is not enough. |
 | `fetch_document` vs `delegate` return on failure | `fetch_document` returns `None` (not an error string) when the remote returns 404 or any error. The tool handler converts `None` → `{"error": "..."}` JSON. This differs from `delegate` which returns `"[error:...]"` directly. |
+| `knowledge_retriever.retrieve()` has no `limit` param | `KnowledgeRetriever.retrieve(query, workspace_id)` uses `self._top_k` set at construction — no per-call limit. The Weave knowledge endpoint calls `gateway.knowledge_index.search(q, agent_id, limit)` directly via `asyncio.to_thread` to support a caller-supplied limit. |
+| `Chunk` is a dataclass, not Pydantic | `Chunk` is decorated with `@dataclass` (in `claw/knowledge/ingestion.py`). Serialize it with `dataclasses.asdict(c)`, NOT `.model_dump()`. Using `.model_dump()` will raise `AttributeError`. |
+| `list_all_agents` skip-failed-nodes pattern | `asyncio.gather(..., return_exceptions=True)` returns exceptions as values in the results list. Check `isinstance(agents, list)` (not `not isinstance(agents, Exception)`) to filter them out — a failed node yields an `Exception` object, not a list. |
 
 ## Package layout
 
@@ -236,7 +245,7 @@ claw_slack/             Slack adapter
 claw_telegram/          Telegram adapter
 claw_webchat/           Built-in browser UI + WebSocket adapter
 workflows/              Nodus DSL scripts (.nd)
-tests/                  Milestone test suites (200/200)
+tests/                  Milestone test suites (218/218)
 skills/                 User skill files (empty by default)
 workspace/              Agent workspace placeholder (.gitkeep)
 ```
@@ -257,7 +266,7 @@ workspace/              Agent workspace placeholder (.gitkeep)
 
 `CLAW_AINDY_INTEGRATION_PLAN.md` in the repo root is the authoritative phase-by-phase migration plan.
 
-**Phases 1–12 are complete (including Phase 6 follow-ons):**
+**Phases 1–14 are complete (including Phase 6 follow-ons):**
 - Phase 1: SDK wiring + lifespan + turn lifecycle events
 - Phase 2: AINDY memory backend (`AINDYMemoryStore`, `_aindy_or_local`, `memory_backend` config)
 - Phase 3: Execution tracking — `execution_unit_id` per turn, `claw.session.*` / `claw.memory.written` / `claw.cron.executed` events
@@ -272,5 +281,6 @@ workspace/              Agent workspace placeholder (.gitkeep)
 - Phase 11: Delegation audit trail — `AgentDispatcher` emits `claw.delegation.started` / `claw.delegation.complete` / `claw.delegation.error` via `asyncio.create_task` (fire-and-forget); `delegation_id` UUID per dispatch for correlation; `persistent` flag in payload
 - Phase 12: Distributed Workspaces (Weave) — `claw/weave/` package; `WeaveNodeStore` (SQLite peer registry); `WeaveClient` (httpx cross-node HTTP); `weave_delegate` / `weave_list_nodes` / `weave_list_agents` tools; `WeaveConfig` in `ClawConfig`; `/weave/*` REST endpoints in `_build_claw_router`; `claw weave` CLI; `is_weave_tool` injection in `scoped_executor` and `_inner_exec`
 - Phase 13: Cross-node workspace federation — pull-on-read, peer-trust model; `WeaveClient.fetch_documents/fetch_document/fetch_tasks`; `weave_list_workspace_documents` / `weave_read_document` / `weave_list_workspace_tasks` tools; `GET /weave/workspace/{agent_id}/documents[/{doc_id}]` + `GET /weave/workspace/{agent_id}/tasks` REST endpoints (gated on both `weave.enabled` and `workspace.enabled`)
+- Phase 14: Weave-wide agent discovery + cross-node writes — `WeaveClient.list_all_agents` (concurrent, skip-failed-nodes); `create_document`, `create_task`, `update_task`, `search_knowledge`; 5 new tools (`weave_discover_agents`, `weave_create_document`, `weave_create_task`, `weave_update_task`, `weave_search_knowledge`); write REST endpoints (`POST /weave/workspace/{agent_id}/documents|tasks`, `PATCH /weave/workspace/{agent_id}/tasks/{task_id}`); knowledge REST endpoint (`GET /weave/workspace/{agent_id}/knowledge`; uses `index.search()` directly, serializes `Chunk` via `dataclasses.asdict()`)
 
-Phase 14+ (Weave-wide agent discovery, cross-node writes) are on the roadmap.
+Phase 15+ (workspace data replication, Weave-wide knowledge federation) are on the roadmap.

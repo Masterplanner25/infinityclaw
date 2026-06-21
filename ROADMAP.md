@@ -218,22 +218,25 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 
 ---
 
-## Planned
-
-### Phase 14 — Weave-Wide Agent Discovery & Cross-Node Writes
+### Phase 14 — Weave-Wide Agent Discovery & Cross-Node Writes ✅
 *Agents discover peers across the whole Weave and write to remote workspaces*
 
 **Capabilities unlocked:**
-- `weave_discover_agents` — queries all registered peers at once; unified agent roster
-- Remote document and task creation/update via new weave write tools
-- Knowledge index federation: search a remote node's knowledge index
+- `weave_discover_agents` — queries all registered peers concurrently; unified agent roster with node attribution; unreachable nodes silently skipped
+- Remote document and task creation/update via cross-node write tools
+- Knowledge index federation: search a remote node's FTS5 knowledge index
 
-**Work (planned):**
-- `weave_discover_agents` tool + `WeaveClient.list_all_agents()`
-- `weave_create_document`, `weave_update_task` tools + corresponding REST endpoints
-- `weave_search_knowledge` tool + `GET /weave/workspace/{agent_id}/knowledge?q=...` endpoint
+**Work (complete):**
+- `claw/weave/model.py` — `WeaveCreateDocumentRequest`, `WeaveCreateTaskRequest`, `WeaveUpdateTaskRequest` request models
+- `WeaveClient` — `list_all_agents(nodes)` (`asyncio.gather` + skip-failed-nodes via `isinstance(agents, list)` check; adds `node_id` + `node_url` attribution); `create_document`, `create_task`, `update_task` (returns `None` on 404), `search_knowledge`
+- `claw/weave/tools.py` — 5 new tools: `weave_discover_agents`, `weave_create_document`, `weave_create_task`, `weave_update_task`, `weave_search_knowledge`; `_WEAVE_TOOLS` frozenset now 11 entries
+- REST write endpoints (gated on `workspace.enabled`): `POST /weave/workspace/{agent_id}/documents`, `POST /weave/workspace/{agent_id}/tasks`, `PATCH /weave/workspace/{agent_id}/tasks/{task_id}`
+- REST knowledge endpoint (gated on `knowledge.enabled`): `GET /weave/workspace/{agent_id}/knowledge?q=...&limit=...` — calls `knowledge_index.search()` directly via `asyncio.to_thread`; serializes `Chunk` dataclass via `dataclasses.asdict()`
+- `tests/test_aindy_phase14.py` — 32 checks, 18 pytest-collected functions
 
 ---
+
+## Planned
 
 ## Future Considerations (unscheduled)
 
