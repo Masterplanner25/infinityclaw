@@ -70,6 +70,53 @@ class WeaveClient:
             logger.debug("delegate failed for node %s: %s", node.node_id, exc)
             return f"[error: weave delegate to {node.node_id} failed: {exc}]"
 
+    async def fetch_documents(self, node: WeaveNode, agent_id: str) -> list[dict[str, Any]]:
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                r = await client.get(
+                    f"{node.url.rstrip('/')}/weave/workspace/{agent_id}/documents",
+                    headers=self._headers(node),
+                )
+                r.raise_for_status()
+                return r.json().get("documents", [])
+        except Exception as exc:
+            logger.debug("fetch_documents failed for node %s agent %s: %s", node.node_id, agent_id, exc)
+            return []
+
+    async def fetch_document(
+        self, node: WeaveNode, agent_id: str, doc_id: str
+    ) -> dict[str, Any] | None:
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                r = await client.get(
+                    f"{node.url.rstrip('/')}/weave/workspace/{agent_id}/documents/{doc_id}",
+                    headers=self._headers(node),
+                )
+                if r.status_code == 404:
+                    return None
+                r.raise_for_status()
+                return r.json()
+        except Exception as exc:
+            logger.debug("fetch_document failed for node %s doc %s: %s", node.node_id, doc_id, exc)
+            return None
+
+    async def fetch_tasks(
+        self, node: WeaveNode, agent_id: str, status: str = ""
+    ) -> list[dict[str, Any]]:
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                params = {"status": status} if status else {}
+                r = await client.get(
+                    f"{node.url.rstrip('/')}/weave/workspace/{agent_id}/tasks",
+                    params=params,
+                    headers=self._headers(node),
+                )
+                r.raise_for_status()
+                return r.json().get("tasks", [])
+        except Exception as exc:
+            logger.debug("fetch_tasks failed for node %s agent %s: %s", node.node_id, agent_id, exc)
+            return []
+
     async def register_self(self, remote: WeaveNode, self_node: WeaveNode) -> bool:
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:

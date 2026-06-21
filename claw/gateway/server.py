@@ -843,6 +843,34 @@ def _build_claw_router(gateway: ClawGateway, config: ClawConfig) -> APIRouter:
             )
             return {"response": response, "agent_id": req.agent_id}
 
+        # Workspace federation endpoints — only when workspace is also enabled
+        if config.workspace.enabled:
+            from typing import Optional as _Opt
+
+            @router.get("/weave/workspace/{agent_id}/documents", include_in_schema=False)
+            async def weave_workspace_documents(agent_id: str):
+                docs = await gateway.workspace_manager.list_documents(agent_id)
+                return {
+                    "agent_id": agent_id,
+                    "documents": [d.model_dump(mode="json") for d in docs],
+                }
+
+            @router.get("/weave/workspace/{agent_id}/documents/{doc_id}", include_in_schema=False)
+            async def weave_workspace_document(agent_id: str, doc_id: str):
+                from fastapi import HTTPException as _HTTPException
+                doc = await gateway.workspace_manager.get_document(doc_id)
+                if doc is None or doc.workspace_id != agent_id:
+                    raise _HTTPException(status_code=404, detail="Document not found")
+                return doc.model_dump(mode="json")
+
+            @router.get("/weave/workspace/{agent_id}/tasks", include_in_schema=False)
+            async def weave_workspace_tasks(agent_id: str, status: _Opt[str] = None):
+                tasks = await gateway.workspace_manager.list_tasks(agent_id, status)
+                return {
+                    "agent_id": agent_id,
+                    "tasks": [t.model_dump(mode="json") for t in tasks],
+                }
+
     return router
 
 

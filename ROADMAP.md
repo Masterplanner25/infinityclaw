@@ -200,22 +200,38 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 
 ---
 
-## Planned
-
-### Phase 13 — Workspace Data Replication
-*Workspace documents and tasks replicate across Weave nodes*
+### Phase 13 — Cross-Node Workspace Federation ✅
+*Agents read workspace documents and tasks from peer Weave nodes on demand*
 
 **Capabilities unlocked:**
-- A workspace hosted on Node A replicates its documents and tasks to Node B
-- An agent on any Weave node can read/write a workspace owned by another node (with permission)
-- Knowledge index synchronized across nodes
-- Weave-wide agent discovery: "find me an agent that can do X"
+- An agent on Node B can list and read documents from Node A's workspace
+- An agent on Node B can list tasks from Node A's workspace (with optional status filter)
+- Pull-on-read: data is fetched live; no background sync needed
+- Peer-trust model: any registered peer node may read — admin controls access via the peer registry
+
+**Work (complete):**
+- `WeaveClient`: `fetch_documents(node, agent_id)`, `fetch_document(node, agent_id, doc_id) -> dict|None`, `fetch_tasks(node, agent_id, status="")`
+- Tools: `weave_list_workspace_documents`, `weave_read_document`, `weave_list_workspace_tasks` — registered via `register_weave_tools()`, injection via `is_weave_tool`
+- REST endpoints (gated on both `weave.enabled` and `workspace.enabled`): `GET /weave/workspace/{agent_id}/documents`, `GET /weave/workspace/{agent_id}/documents/{doc_id}`, `GET /weave/workspace/{agent_id}/tasks?status=...`
+- Document endpoint verifies `doc.workspace_id == agent_id` to prevent cross-workspace leakage
+- `tests/test_aindy_phase13.py` — 28 checks, 16 pytest-collected functions
+
+---
+
+## Planned
+
+### Phase 14 — Weave-Wide Agent Discovery & Cross-Node Writes
+*Agents discover peers across the whole Weave and write to remote workspaces*
+
+**Capabilities unlocked:**
+- `weave_discover_agents` — queries all registered peers at once; unified agent roster
+- Remote document and task creation/update via new weave write tools
+- Knowledge index federation: search a remote node's knowledge index
 
 **Work (planned):**
-- AINDY event-bus replication protocol for workspace objects
-- Cross-node `WorkspacePermission` enforcement
-- Weave-scoped agent registry (multi-node discovery)
-- Knowledge index sync across Weave peers
+- `weave_discover_agents` tool + `WeaveClient.list_all_agents()`
+- `weave_create_document`, `weave_update_task` tools + corresponding REST endpoints
+- `weave_search_knowledge` tool + `GET /weave/workspace/{agent_id}/knowledge?q=...` endpoint
 
 ---
 

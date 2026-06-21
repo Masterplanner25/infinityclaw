@@ -7,7 +7,7 @@
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
 - Python: 3.11+ (venv at `C:\dev\claw\venv`)
-- Tests: `pytest tests/ -q` → 184/184 (never break this baseline)
+- Tests: `pytest tests/ -q` → 200/200 (never break this baseline)
 
 ## How to run
 
@@ -141,6 +141,12 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
   - `POST /weave/delegate` — body: `WeaveDelegateRequest`; calls `run_agent_turn(agent_id, prompt, ..., session_key=req.session_key)` and returns response
 - `ClawGateway` attributes: `weave_store: Optional[WeaveNodeStore]`, `weave_client: Optional[WeaveClient]`, `_weave_node_id: str`, `weave_node_id` property.
 - CLI: `claw weave status/nodes/connect/disconnect` (requires `weave.enabled = true`).
+- **Cross-node workspace federation** (Phase 13) — pull-on-read, peer-trust model:
+  - `WeaveClient`: `fetch_documents(node, agent_id)`, `fetch_document(node, agent_id, doc_id) -> dict|None`, `fetch_tasks(node, agent_id, status="")`
+  - Tools: `weave_list_workspace_documents`, `weave_read_document`, `weave_list_workspace_tasks` — same injection pattern via `is_weave_tool`
+  - REST (requires both `weave.enabled` AND `workspace.enabled`): `GET /weave/workspace/{agent_id}/documents`, `GET /weave/workspace/{agent_id}/documents/{doc_id}`, `GET /weave/workspace/{agent_id}/tasks?status=...`
+  - `fetch_document` returns `None` on 404 (not an error string); tool handler converts `None` → `{"error": "..."}` JSON
+  - Document endpoint verifies `doc.workspace_id == agent_id` before returning — prevents cross-workspace leakage via guessed doc IDs
 
 ### Knowledge watcher (`claw/knowledge/watcher.py`)
 - `KnowledgeWatcher.watch(agents)` is a background coroutine started in `ClawGateway.startup()` when knowledge is enabled.
@@ -209,6 +215,8 @@ The FastAPI app uses a `lifespan` context manager (not `@app.on_event`, which is
 | Weave REST endpoints conditional | All `/weave/*` routes are only registered inside `if config.weave.enabled:` in `_build_claw_router`. When disabled, the block is skipped entirely. |
 | `WeaveClient` never raises | All `WeaveClient` methods catch `Exception` and return `False` / `[]` / `"[error:...]"` — network failures never propagate to the LLM tool call. |
 | `claw weave connect` requires live remote | `connect` always calls `GET /weave/agents` on the remote to fetch its `node_id`. `--no-ping` only skips the subsequent `WeaveClient.ping()` call — it does NOT bypass the node_id fetch. If the remote is unreachable, `connect` will always fail; there is no offline-registration path. |
+| Workspace federation double-gate | `/weave/workspace/*` endpoints are only registered when BOTH `config.weave.enabled` AND `config.workspace.enabled` are true. Weave alone is not enough. |
+| `fetch_document` vs `delegate` return on failure | `fetch_document` returns `None` (not an error string) when the remote returns 404 or any error. The tool handler converts `None` → `{"error": "..."}` JSON. This differs from `delegate` which returns `"[error:...]"` directly. |
 
 ## Package layout
 
@@ -228,7 +236,7 @@ claw_slack/             Slack adapter
 claw_telegram/          Telegram adapter
 claw_webchat/           Built-in browser UI + WebSocket adapter
 workflows/              Nodus DSL scripts (.nd)
-tests/                  Milestone test suites (184/184)
+tests/                  Milestone test suites (200/200)
 skills/                 User skill files (empty by default)
 workspace/              Agent workspace placeholder (.gitkeep)
 ```
@@ -263,5 +271,6 @@ workspace/              Agent workspace placeholder (.gitkeep)
 - Phase 10: Session-persistent delegation — `run_agent_turn(session_key=...)`, delegation session key derivation in `delegate_to_agent` handler, `_session_key` injection in `scoped_executor` and `_inner_exec`, `HandoffRequest.session_key` field
 - Phase 11: Delegation audit trail — `AgentDispatcher` emits `claw.delegation.started` / `claw.delegation.complete` / `claw.delegation.error` via `asyncio.create_task` (fire-and-forget); `delegation_id` UUID per dispatch for correlation; `persistent` flag in payload
 - Phase 12: Distributed Workspaces (Weave) — `claw/weave/` package; `WeaveNodeStore` (SQLite peer registry); `WeaveClient` (httpx cross-node HTTP); `weave_delegate` / `weave_list_nodes` / `weave_list_agents` tools; `WeaveConfig` in `ClawConfig`; `/weave/*` REST endpoints in `_build_claw_router`; `claw weave` CLI; `is_weave_tool` injection in `scoped_executor` and `_inner_exec`
+- Phase 13: Cross-node workspace federation — pull-on-read, peer-trust model; `WeaveClient.fetch_documents/fetch_document/fetch_tasks`; `weave_list_workspace_documents` / `weave_read_document` / `weave_list_workspace_tasks` tools; `GET /weave/workspace/{agent_id}/documents[/{doc_id}]` + `GET /weave/workspace/{agent_id}/tasks` REST endpoints (gated on both `weave.enabled` and `workspace.enabled`)
 
-Phase 13+ (workspace data replication, Weave-wide agent discovery) are on the roadmap.
+Phase 14+ (Weave-wide agent discovery, cross-node writes) are on the roadmap.
