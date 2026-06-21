@@ -1,8 +1,8 @@
 # Infinity Claw
 
-**The first agent built on the [Masterplan Infinite Weave](https://github.com/Masterplanner25) Framework.**
+**The first company application built on infrastructure Masterplan Infinite Weave itself created.**
 
-Infinity Claw is a production-grade personal AI assistant that serves as the reference implementation for building agents on the Nodus Language Ecosystem and the AINDY execution kernel. It is designed to be self-hosted, multi-channel, and zero-infrastructure by default — run it from a single config file with nothing but an Anthropic API key.
+Infinity Claw is a production-grade personal AI assistant — the first application to fully exercise the underlying substrate of the Infinity Algorithm by running on both the Nodus language ecosystem and the AINDY execution kernel simultaneously. It is designed to be self-hosted, multi-channel, and zero-infrastructure by default — run it from a single config file with nothing but an Anthropic API key.
 
 ---
 
@@ -10,7 +10,7 @@ Infinity Claw is a production-grade personal AI assistant that serves as the ref
 
 | Layer | Technology |
 |---|---|
-| Agent orchestration DSL | [Nodus Language](https://github.com/Masterplanner25) (`nodus-lang` 4.0.5, 29-package runtime) |
+| Agent orchestration DSL | [Nodus Language](https://github.com/Masterplanner25) (`nodus-lang` 4.0.6, 29-package runtime) |
 | Execution kernel | AINDY runtime 1.4.0 — syscall dispatcher, MAS memory, Redis event bus, OTel |
 | Gateway | FastAPI + WebSocket + REST control plane |
 | Channels | WebChat (built-in), Discord, Telegram, Slack, Matrix, Signal |
