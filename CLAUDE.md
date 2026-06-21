@@ -2,7 +2,7 @@
 
 ## Project identity
 
-**Infinity Claw** (`claw` package, `C:\dev\claw`) is the first agent built on the Masterplan Infinite Weave Framework. It showcases the Nodus Language Ecosystem (nodus-lang 4.0.5, 29-package runtime) integrated with the AINDY execution kernel (aindy-runtime 1.4.0) as a production-grade personal AI assistant.
+**Infinity Claw** (`claw` package, `C:\dev\claw`) is the first agent built on the Masterplan Infinite Weave Framework. It showcases the Nodus Language Ecosystem (nodus-lang 4.0.6, 29-package runtime) integrated with the AINDY execution kernel (aindy-runtime 1.4.0) as a production-grade personal AI assistant.
 
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
@@ -252,6 +252,58 @@ workspace/              Agent workspace placeholder (.gitkeep)
 
 `_build_claw_router(gateway, config) -> APIRouter` extracts all Claw-specific routes. `build_app()` gates `/health`, `/ready`, and observability behind `not config.aindy.mounted` then calls `app.include_router(_build_claw_router(...))`.  
 `register_claw_app(config_path, prefix)` in `claw/aindy/app_registration.py` is the mounted-mode entry point: starts the gateway, builds the router, calls `AINDY.platform_layer.registry.register_router(router)`, returns the started `ClawGateway`.
+
+## Nodus DSL (`workflows/*.nd`)
+
+**nodus-lang 4.0.6** — `pip install nodus-lang`. Bytecode version 4.
+
+```powershell
+venv\Scripts\nodus.exe run workflows/boot.nd
+venv\Scripts\nodus.exe run --time-limit 5000 workflows/boot.nd  # workflows or anything with sleep
+venv\Scripts\nodus.exe check workflows/boot.nd                  # syntax check
+venv\Scripts\nodus.exe fmt workflows/boot.nd                    # format in place
+```
+
+### Critical rules — never violate
+
+**Types and access**
+- `{k: v}` is a **record** — dot access: `r.key`
+- `{"k": v}` is a **map** — bracket access: `m["key"]`
+- Never mix. `json.parse()` returns a map — always bracket access.
+- `run_workflow()` / `run_goal()` return maps: `r["steps"]["step_name"]`, `r["state"]["key"]`
+
+**Operators and syntax**
+- `+=`, `-=`, `*=`, `/=` work. `**` does not — use `math.pow()`.
+- `print()` is single-argument. Use interpolation: `print("val: \(x)")`.
+- Expressions cannot span newlines. Keep list literals and function calls on one line.
+
+**Numbers**
+- Bare numbers are floats: `42` → `type()` = `"float"`. Use `i` suffix for integers: `42i`.
+- Use integers for counters, indices, loop bounds, and workflow state.
+
+**Imports**
+- All imports must be at the top level — never inside functions, steps, or conditionals.
+
+**Closures and mutable state**
+- Assigning to an outer `let` inside a closure creates a nil local shadow, not a mutation.
+- Use a map for shared mutable state: `let s = {"n": 0i}` then `s["n"] = s["n"] + 1i`.
+
+**Coroutines and channels**
+- `spawn()` takes a coroutine value, not a function literal.
+  Pattern: `let c = coroutine(fn() { ... })` → `spawn(c)` → `run_loop()`.
+- Channels are VM built-ins — `channel()`, `send()`, `recv()`, `close()`. Do not `import "std:channel"`.
+- Default execution deadline is 200ms wall-clock (including sleep). Override: `--time-limit N`.
+
+**Workflows**
+- `checkpoint` is valid inside step bodies only, not at workflow body level.
+- Step results must be JSON-serializable — return maps `{"k": v}`, not records `{k: v}`.
+
+### Skill
+
+Full Nodus skill is at `.claude/commands/nodus.skill` — loaded automatically by Claude Code.
+Sub-references: `.claude/commands/nodus/` (quickstart, errors, examples, idioms, modules).
+
+---
 
 ## AINDY runtime reference (installed in venv)
 
