@@ -316,7 +316,7 @@ Sub-references: `.claude/commands/nodus/` (quickstart, errors, examples, idioms,
 
 ## Integration plan
 
-`CLAW_AINDY_INTEGRATION_PLAN.md` in the repo root is the authoritative phase-by-phase migration plan.
+`docs/CLAW_AINDY_INTEGRATION_PLAN.md` is the authoritative phase-by-phase migration plan.
 
 **Phases 1–14 are complete (including Phase 6 follow-ons):**
 - Phase 1: SDK wiring + lifespan + turn lifecycle events
