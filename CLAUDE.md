@@ -7,7 +7,7 @@
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
 - Python: 3.11+ (venv at `C:\dev\claw\venv`)
-- Tests: `pytest tests/ -q` → 218/218 (never break this baseline)
+- Tests: `pytest tests/ -q` → 240/240 (never break this baseline)
 
 ## How to run
 
@@ -373,4 +373,4 @@ Sub-references: `.claude/commands/nodus/` (quickstart, errors, examples, idioms,
 - Phase 13: Cross-node workspace federation — pull-on-read, peer-trust model; `WeaveClient.fetch_documents/fetch_document/fetch_tasks`; `weave_list_workspace_documents` / `weave_read_document` / `weave_list_workspace_tasks` tools; `GET /weave/workspace/{agent_id}/documents[/{doc_id}]` + `GET /weave/workspace/{agent_id}/tasks` REST endpoints (gated on both `weave.enabled` and `workspace.enabled`)
 - Phase 14: Weave-wide agent discovery + cross-node writes — `WeaveClient.list_all_agents` (concurrent, skip-failed-nodes); `create_document`, `create_task`, `update_task`, `search_knowledge`; 5 new tools (`weave_discover_agents`, `weave_create_document`, `weave_create_task`, `weave_update_task`, `weave_search_knowledge`); write REST endpoints (`POST /weave/workspace/{agent_id}/documents|tasks`, `PATCH /weave/workspace/{agent_id}/tasks/{task_id}`); knowledge REST endpoint (`GET /weave/workspace/{agent_id}/knowledge`; uses `index.search()` directly, serializes `Chunk` via `dataclasses.asdict()`)
 
-Phase 15+ (workspace data replication, Weave-wide knowledge federation) are on the roadmap.
+Phase 15 (operational hardening) is complete. Deferred Weave capabilities (workspace replication, knowledge federation) and the public product path (Phases 16–20) are documented in `docs/ROADMAP.md`.

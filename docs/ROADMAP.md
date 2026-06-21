@@ -238,22 +238,21 @@ This roadmap tracks capabilities, not features. Each phase adds a new category o
 
 ## Planned
 
-### Phase 15 — Operational Hardening
+### Phase 15 — Operational Hardening ✅
 *Stable for personal use*
 
 Phase 15 closes the gap between "feature complete" and "reliably runnable." No new capabilities — only the operational foundations that make the system trustworthy to depend on day-to-day.
 
-**Goal:** Any user can back up their data, upgrade without manual DB surgery, and get actionable diagnostics when something is wrong.
+**What was built:**
 
-**Work:**
-
-- `claw backup [--output <path>]` — archives all enabled SQLite stores (memory, workspace, weave) to a timestamped `.tar.gz`; prints the output path on success
-- `claw restore <archive>` — validates archive contents before overwriting; refuses to restore if the target store's schema version doesn't match
-- Schema versioning — add a `schema_version` table to `MemorySqliteStore`, `WorkspaceStore`, and `WeaveNodeStore`; `ClawGateway.startup()` applies pending migrations automatically on startup; no manual intervention required for upgrades
+- `claw backup [--output <path>]` — archives all enabled SQLite stores (memory, workspace, weave) to a timestamped `.tar.gz` with a `manifest.json` (claw version, timestamp, per-store schema version)
+- `claw restore <archive>` — validates manifest, checks schema version parity before overwriting, restores each store to its configured path; exits with error on version mismatch
+- Schema versioning — `SCHEMA_VERSION = 1` constant + `schema_version` table in `MemorySqliteStore`, `WorkspaceStore`, and `WeaveNodeStore`; version is stamped on first init; future upgrades add migration branches, no manual DB surgery required
 - Expanded `claw doctor`:
-  - SQLite integrity check (`PRAGMA integrity_check`) for each enabled store — reports corruption before it causes a runtime failure
-  - Weave peer reachability — pings each registered peer node and reports status (reachable / unreachable / no peers)
-  - Config consistency warnings — warn if `memory_backend = "aindy"` is set but no AINDY URL or API key is configured; warn if any known secret field (JWT secret, API key, token) appears to be a hardcoded non-placeholder value in `claw.toml`
+  - `_db_integrity_ok(path)` helper — `PRAGMA integrity_check` per enabled store; reports `[FAIL]` on corruption or missing file
+  - Weave peer reachability — pings each registered peer node, reports `[OK]`/`[WARN]` per node with truncated node ID
+  - `_check_config_consistency(cfg)` helper — warns on `memory_backend="aindy"` without `aindy.enabled = true`; warns on inline secrets in `gateway.token`, `aindy.api_key`, and credential `api_key` fields (env var refs like `$VAR` are not flagged)
+- `tests/test_aindy_phase15.py` — 22 assertions across 22 pytest-collected functions (240/240 total)
 
 ---
 
