@@ -10,7 +10,7 @@ Infinity Claw is a production-grade personal AI assistant — the first applicat
 
 | Layer | Technology |
 |---|---|
-| Agent orchestration DSL | [Nodus Language](https://github.com/Masterplanner25) (`nodus-lang` 4.0.6, 29-package runtime) |
+| Agent orchestration DSL | [Nodus Language](https://github.com/Masterplanner25) (`nodus-lang` 4.0.8, 29-package runtime) |
 | Execution kernel | AINDY runtime 1.4.0 — syscall dispatcher, MAS memory, Redis event bus, OTel |
 | Gateway | FastAPI + WebSocket + REST control plane |
 | Channels | WebChat (built-in), Discord, Telegram, Slack, Matrix, Signal |

@@ -1,7 +1,7 @@
 # Claw → A.I.N.D.Y. Integration Plan
 
 **Baseline**: Nodus-native Claw (post-OpenClaw rewrite)  
-**Runtime**: aindy-runtime 1.4.0 / nodus-lang 4.0.5  
+**Runtime**: aindy-runtime 1.4.0 / nodus-lang 4.0.8  
 **Date**: 2026-06-19
 
 ---

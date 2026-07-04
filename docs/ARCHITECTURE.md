@@ -276,7 +276,7 @@ Claw routes mounted inside a larger AINDY FastAPI app. Health and observability 
 | Language | Python 3.11+ |
 | Framework | FastAPI + Starlette + WebSocket |
 | LLM client | `anthropic.AsyncAnthropic` (streaming) |
-| Orchestration DSL | Nodus Language 4.0.5 (29-package runtime) |
+| Orchestration DSL | Nodus Language 4.0.8 (29-package runtime) |
 | Execution kernel | AINDY runtime 1.4.0 |
 | Scheduling | APScheduler |
 | Memory (local) | SQLite (`sqlite3`) |

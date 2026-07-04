@@ -8,7 +8,7 @@ Architecture Decision Records (ADRs) document the significant choices made durin
 
 **Status:** Accepted
 
-**Decision:** Infinity Claw is built on the Nodus Language Ecosystem (nodus-lang 4.0.5, 29-package runtime) rather than a general-purpose Python framework.
+**Decision:** Infinity Claw is built on the Nodus Language Ecosystem (nodus-lang 4.0.8, 29-package runtime) rather than a general-purpose Python framework.
 
 **Reason:** Nodus was designed specifically for agentic orchestration: typed session management, credential rotation, prompt context building, and streaming tool use. Using a general framework would require rebuilding what Nodus already provides correctly. Claw is the first Masterplan Infinite Weave application; it must demonstrate that Nodus is production-capable as the orchestration foundation.
 
