@@ -211,7 +211,12 @@ class CronManager:
         if job.delivery == DeliveryMode.ANNOUNCE and job.delivery_channel and job.delivery_peer:
             adapter = self._gateway.channel_registry.get(job.delivery_channel)
             if adapter:
-                await adapter.send(response, job.delivery_peer)
+                import uuid as _uuid
+
+                await self._gateway.deliver(
+                    job.delivery_channel, response, job.delivery_peer,
+                    session_key=f"cron:{job.id}", turn_id=str(_uuid.uuid4()), index=0,
+                )
             else:
                 logger.warning("[cron] no adapter for delivery channel=%s", job.delivery_channel)
 

@@ -358,8 +358,10 @@ AINDY execution kernel integration.
 | `api_key` | string | `""` | AINDY API key or JWT bearer token. Can be set via `AINDY_API_KEY` env var. |
 | `emit_events` | bool | `true` | Fire turn lifecycle events (`turn.start`, `turn.complete`, `turn.error`, `session.started`, `memory.written`, etc.) to AINDY. Fire-and-forget; never blocks a turn. |
 | `memory_backend` | string | `"local"` | Where memories are stored: `"local"` (SQLite only), `"aindy"` (AINDY MAS only, raises on failure), `"aindy-fallback"` (AINDY with automatic SQLite fallback). |
-| `user_id` | string | `"claw"` | MAS identity root for memory path namespacing (`/memory/{user_id}/...`). |
+| `user_id` | string | `"claw"` | MAS identity root for memory path namespacing (`/memory/{user_id}/...`). **With `effects_backend = "aindy"` this must be the runtime user's UUID** — the effect ledger attributes every effect to a `users` row; the seam refuses a non-UUID at startup. |
 | `mounted` | bool | `false` | Set to `true` when Claw is registered inside the AINDY platform layer. Bypasses auth, suppresses `/health`/`/ready`. |
+| `effects_backend` | string | `"local"` | `"local"`: channel adapters send directly. `"aindy"`: every outbound message goes through the runtime's tool seam (`execute_tool`, tool `claw.channel.send`, `EXACTLY_ONCE`) — a retry of the same message in the same turn is refused by the runtime's effect ledger and never reaches the adapter. Runtime `SUBSTRATE-WITNESS-1`. Env: `AINDY_EFFECTS_BACKEND`. |
+| `database_url` | string | `""` | The runtime's Postgres, required with `effects_backend = "aindy"` (the runtime is embedded in-process; the ledger is a table). Bootstrap it once with `aindy-runtime bootstrap-schema`. SQLite is refused. Env: `AINDY_DATABASE_URL`. |
 
 ```toml
 [aindy]
@@ -368,6 +370,10 @@ url            = "http://localhost:8000"
 api_key        = "${AINDY_API_KEY}"
 emit_events    = true
 memory_backend = "aindy-fallback"
+# delivery through the runtime's tool seam (EXACTLY_ONCE per message):
+effects_backend = "aindy"
+database_url    = "${AINDY_DATABASE_URL}"
+user_id         = "f33f40c2-9580-4c42-a281-2d507c4eddff"   # the runtime user's UUID
 ```
 
 ---

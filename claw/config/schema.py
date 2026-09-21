@@ -157,6 +157,10 @@ class AINDYConfig(BaseModel):
     memory_backend: str = "local"  # "local" | "aindy" | "aindy-fallback"
     user_id: str = "claw"       # MAS identity root for path namespacing
     mounted: bool = False       # True when Claw is registered inside the AINDY platform layer
+    # SUBSTRATE-WITNESS-1: route outbound message delivery through the runtime's tool seam
+    # (execute_tool, EXACTLY_ONCE). "local" = adapters send directly, as before.
+    effects_backend: str = "local"  # "local" | "aindy"
+    database_url: str = ""          # the runtime's Postgres; required when effects_backend = "aindy"
 
 
 class CoordinationConfig(BaseModel):

@@ -2,7 +2,7 @@
 
 **The first company application built on infrastructure Masterplan Infinite Weave itself created.**
 
-Infinity Claw is a production-grade personal AI assistant — the first application built on the Infinity Algorithm's substrate. Today its AINDY integration is the HTTP bridge (turn lifecycle events, optional MAS memory backend); routing Claw's own effects through the runtime's tool seam is in progress (the runtime tracks it as `SUBSTRATE-WITNESS-1`).
+Infinity Claw is a production-grade personal AI assistant — the first application built on the Infinity Algorithm's substrate. Its AINDY integration is the HTTP bridge (turn lifecycle events, optional MAS memory backend) and, with `[aindy] effects_backend = "aindy"`, outbound message delivery routed through the runtime's tool seam (`execute_tool`, `EXACTLY_ONCE` per message — a retried message is refused by the runtime's effect ledger). The runtime tracks that slice as `SUBSTRATE-WITNESS-1`; other effects still bypass it.
 
 ---
 

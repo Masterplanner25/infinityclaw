@@ -97,6 +97,17 @@ class ClawGateway:
             except Exception as exc:
                 logger.warning("[gateway] AINDY client init failed: %s", exc)
 
+        # AINDY effect seam (optional): outbound delivery through the runtime's tool seam.
+        # Built here, started in startup() once the event loop exists.
+        self._effects: Optional["AINDYEffectSeam"] = None
+        if config.aindy.enabled and config.aindy.effects_backend == "aindy":
+            from claw.aindy.effects import AINDYEffectSeam
+            self._effects = AINDYEffectSeam(
+                user_id=config.aindy.user_id,
+                database_url=config.aindy.database_url,
+                registry=self.channel_registry,
+            )
+
         # Memory
         self.memory_manager = MemoryManager(
             config.memory,
@@ -284,6 +295,8 @@ class ClawGateway:
             self._listener_tasks["knowledge-watcher"] = _watcher_task
             logger.info("[knowledge] file watcher started")
 
+        if self._effects is not None:
+            self._effects.start(asyncio.get_running_loop())
         await self.channel_registry.connect_all()
 
         # Start listener tasks for all non-WebChat adapters
@@ -357,6 +370,11 @@ class ClawGateway:
             len(self.channel_registry.all()),
             len(self._listener_tasks),
         )
+
+    async def deliver(self, channel_id: str, content: str, peer_id: str, *, session_key: str,
+                      turn_id: str, index: int, thread_id=None) -> None:
+        await _deliver_via(self, channel_id, content, peer_id, session_key=session_key,
+                           turn_id=turn_id, index=index, thread_id=thread_id)
 
     async def shutdown(self) -> None:
         # Cancel listener tasks
@@ -690,8 +708,11 @@ class ClawGateway:
                 from claw.agents.streaming import split_blocks
                 max_len = adapter.info.max_message_length
                 blocks = split_blocks(result["content"], max_block=max_len)
-                for block in blocks:
-                    await adapter.send(block, peer_id, thread_id=envelope.thread_id)
+                for index, block in enumerate(blocks):
+                    await self.deliver(
+                        adapter.channel_id, block, peer_id, session_key=session_key,
+                        turn_id=execution_unit_id, index=index, thread_id=envelope.thread_id,
+                    )
 
         except Exception as exc:
             logger.error("[gateway] turn error agent=%s: %s", agent_id, exc)
@@ -706,7 +727,10 @@ class ClawGateway:
                 await self.webchat_adapter.send_error(peer_id, str(exc))
             elif adapter:
                 try:
-                    await adapter.send(f"[error: {exc}]", peer_id)
+                    await self.deliver(
+                        adapter.channel_id, f"[error: {exc}]", peer_id, session_key=session_key,
+                        turn_id=execution_unit_id, index=-1,
+                    )
                 except Exception:
                     pass
 
@@ -716,6 +740,23 @@ class ClawGateway:
 # ------------------------------------------------------------------
 
 _AINDY_EMIT_WARNED: set[str] = set()
+
+
+async def _deliver_via(gateway: "ClawGateway", channel_id: str, content: str, peer_id: str, *,
+                       session_key: str, turn_id: str, index: int, thread_id=None) -> None:
+    """One outbound message. Through the AINDY effect seam when configured (EXACTLY_ONCE by
+    message key — a retry of the same block in the same turn is refused by the runtime's
+    ledger), else straight to the adapter, as before."""
+    if gateway._effects is not None:
+        from claw.aindy.effects import message_key
+
+        await gateway._effects.send(
+            channel_id=channel_id, peer_id=peer_id, content=content, session_key=session_key,
+            message_key=message_key(session_key, turn_id, index), thread_id=thread_id,
+        )
+        return
+    kwargs = {"thread_id": thread_id} if thread_id else {}
+    await gateway.channel_registry.send(channel_id, content, peer_id, **kwargs)
 
 
 async def _emit_aindy(client, event_type: str, payload: dict) -> None:
