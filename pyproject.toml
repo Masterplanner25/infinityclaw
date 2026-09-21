@@ -36,6 +36,15 @@ dependencies = [
     "nodus-sdk>=0.1.0",
 ]
 
+[project.optional-dependencies]
+# The AINDY bridge (claw/aindy/): opt-in via `[aindy] enabled = true`. Declared here because the
+# venv carried aindy-runtime 1.4.0 undeclared for months -- the same "depends on what the
+# runtime installs, not what it declares" shape the runtime files as PACK-DEBT-6 / DEBT-COMPAT-1.
+aindy = [
+    "aindy-runtime>=2.22.0,<3.0",
+    "aindy-sdk>=1.0.0",
+]
+
 [project.scripts]
 claw = "claw.cli:main"
 

@@ -2,7 +2,7 @@
 
 ## Project identity
 
-**Infinity Claw** (`claw` package, `C:\dev\claw`) is the first agent built on the Masterplan Infinite Weave Framework. It showcases the Nodus Language Ecosystem (nodus-lang 4.0.8, 29-package runtime) integrated with the AINDY execution kernel (aindy-runtime 1.4.0) as a production-grade personal AI assistant.
+**Infinity Claw** (`claw` package, `C:\dev\claw`) is the first agent built on the Masterplan Infinite Weave Framework. It showcases the Nodus Language Ecosystem (nodus-lang 5.14.0, 29-package runtime) integrated with the AINDY execution kernel (aindy-runtime 2.22.0) as a production-grade personal AI assistant.
 
 - GitHub: https://github.com/Masterplanner25/infinityclaw
 - Package version: 0.1.0
