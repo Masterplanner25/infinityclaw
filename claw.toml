@@ -52,6 +52,8 @@ enabled = false
 # api_key = ""
 # emit_events = true
 # memory_backend = "local"   # "local" | "aindy" | "aindy-fallback"
+# effects_backend = "local"  # "local" | "aindy" -- delivery through the runtime's tool seam (needs database_url + a UUID user_id)
+# database_url = ""           # the runtime's Postgres (AINDY_DATABASE_URL)
 # user_id = "claw"
 # mounted = false            # set true when running inside AINDY platform layer
 

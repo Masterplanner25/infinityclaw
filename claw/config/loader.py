@@ -108,6 +108,12 @@ def _overlay_env(raw: dict[str, Any]) -> None:
     if aindy_url := os.environ.get("AINDY_URL"):
         raw.setdefault("aindy", {})["url"] = aindy_url
 
+    if aindy_db := os.environ.get("AINDY_DATABASE_URL"):
+        raw.setdefault("aindy", {})["database_url"] = aindy_db
+
+    if aindy_effects := os.environ.get("AINDY_EFFECTS_BACKEND"):
+        raw.setdefault("aindy", {})["effects_backend"] = aindy_effects
+
 
 def _ensure_credential(raw: dict[str, Any]) -> None:
     """Guarantee at least one Anthropic credential exists."""
