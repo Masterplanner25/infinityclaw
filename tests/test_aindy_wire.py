@@ -16,6 +16,7 @@ import types
 from unittest.mock import MagicMock
 
 import pytest
+from aindy_sdk.events import EventAPI  # the real class, imported before the stub replaces the module
 
 
 @pytest.fixture
@@ -23,13 +24,19 @@ def sdk_stub(monkeypatch):
     """A stand-in `aindy_sdk` module so the bridge can be built without a server."""
     client = MagicMock(name="AINDYClient")
     client.syscalls.call.return_value = {"status": "success", "data": {"event_id": "e1"}}
+    # the REAL aindy-sdk EventAPI (>= 1.0.1) bound to the stubbed syscall transport, so the wire
+    # shape asserted below is the SDK's, not a re-statement of it
+    client.events = EventAPI(client.syscalls)
     module = types.ModuleType("aindy_sdk")
     module.AINDYClient = MagicMock(return_value=client)
     monkeypatch.setitem(sys.modules, "aindy_sdk", module)
     return client
 
 
-async def test_emit_event_calls_the_syscall_with_event_type_not_the_sdk_method(sdk_stub):
+async def test_emit_event_sends_event_type_on_the_wire(sdk_stub):
+    """Through the REAL aindy-sdk `events.emit` (>= 1.0.1), with only the syscall transport
+    stubbed: the payload that reaches `syscalls.call` carries `event_type`, the key the runtime's
+    `sys.v1.event.emit` requires. Validated against the runtime's own schema below."""
     from claw.aindy.client import _AsyncAINDYClient
 
     bridge = _AsyncAINDYClient("http://runtime:8000", "aindy_key")
@@ -39,7 +46,6 @@ async def test_emit_event_calls_the_syscall_with_event_type_not_the_sdk_method(s
         "sys.v1.event.emit",
         {"event_type": "sys.v1.claw.turn.start", "payload": {"agent_id": "a1"}},
     )
-    sdk_stub.events.emit.assert_not_called()
     assert result["data"]["event_id"] == "e1"
 
 
@@ -49,6 +55,18 @@ async def test_emit_event_with_no_payload_sends_an_empty_dict(sdk_stub):
     await _AsyncAINDYClient("http://runtime:8000", "k").emit_event("sys.v1.claw.turn.error")
     _, sent = sdk_stub.syscalls.call.call_args.args
     assert sent == {"event_type": "sys.v1.claw.turn.error", "payload": {}}
+
+
+def test_the_wire_shape_is_what_the_runtime_requires():
+    """The other side's schema, not a pin on our own output (the SDK's tests were green for
+    months pinning the wrong key). Skips without the runtime installed."""
+    pytest.importorskip("AINDY.kernel.syscall_registry")
+    from AINDY.kernel.syscall_registry import SYSCALL_REGISTRY
+    from AINDY.kernel.syscall_versioning import validate_payload
+
+    schema = SYSCALL_REGISTRY.get("sys.v1.event.emit").input_schema
+    assert validate_payload(schema, {"event_type": "sys.v1.claw.turn.start", "payload": {}}) == []
+    assert validate_payload(schema, {"type": "sys.v1.claw.turn.start", "payload": {}}) != []
 
 
 async def test_a_failing_emit_warns_once_per_event_type(caplog):

@@ -15,17 +15,10 @@ class _AsyncAINDYClient:
         self._sync = AINDYClient(base_url=base_url, api_key=api_key)
 
     async def emit_event(self, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        # aindy-sdk 1.0.0's `events.emit` sends `{"type": ...}`; the runtime's `sys.v1.event.emit`
-        # requires `event_type`, so every call 422'd -- against every runtime release since this
-        # bridge existed, and `_emit_aindy` logged it at DEBUG (runtime handoff
-        # SDK_HANDOFF_1_0_0_wire_mismatches.md, #1). Call the syscall with the key the runtime
-        # reads, the way the runtime's own tutorials do; switch back to `events.emit` when an SDK
-        # release carries the fix.
-        return await asyncio.to_thread(
-            self._sync.syscalls.call,
-            "sys.v1.event.emit",
-            {"event_type": event_type, "payload": payload or {}},
-        )
+        # aindy-sdk >= 1.0.1 sends the key the runtime reads (`event_type`); 1.0.0 sent `type`
+        # and 422'd on every call. The `[aindy]` extra floors the SDK at 1.0.1 for this reason,
+        # and tests/test_aindy_wire.py pins the wire shape against the runtime's own schema.
+        return await asyncio.to_thread(self._sync.events.emit, event_type, payload or {})
 
     async def memory_write(self, path: str, content: str, **kwargs: Any) -> dict[str, Any]:
         return await asyncio.to_thread(self._sync.memory.write, path, content, **kwargs)
