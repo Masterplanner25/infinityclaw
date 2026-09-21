@@ -715,11 +715,20 @@ class ClawGateway:
 # FastAPI app factory
 # ------------------------------------------------------------------
 
+_AINDY_EMIT_WARNED: set[str] = set()
+
+
 async def _emit_aindy(client, event_type: str, payload: dict) -> None:
     try:
         await client.emit_event(event_type, payload)
     except Exception as exc:
-        logger.debug("[gateway] AINDY event skipped %s: %s", event_type, exc)
+        # Once per event type, at WARNING: this bridge 422'd on every call for months and the
+        # DEBUG line here is why nobody noticed. A broken integration point must be visible.
+        if event_type not in _AINDY_EMIT_WARNED:
+            _AINDY_EMIT_WARNED.add(event_type)
+            logger.warning("[gateway] AINDY event %s failed (further failures at debug): %s", event_type, exc)
+        else:
+            logger.debug("[gateway] AINDY event skipped %s: %s", event_type, exc)
 
 
 def _build_claw_router(gateway: ClawGateway, config: ClawConfig) -> APIRouter:
