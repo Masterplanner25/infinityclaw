@@ -42,7 +42,7 @@ dependencies = [
 # runtime installs, not what it declares" shape the runtime files as PACK-DEBT-6 / DEBT-COMPAT-1.
 aindy = [
     "aindy-runtime>=2.22.0,<3.0",
-    "aindy-sdk>=1.0.0",
+    "aindy-sdk>=1.0.1",  # 1.0.0's events.emit sent `type` for `event_type` (422 on every call)
 ]
 
 [project.scripts]
