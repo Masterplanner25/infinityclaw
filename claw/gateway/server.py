@@ -1151,6 +1151,22 @@ def build_app(config: ClawConfig) -> tuple[FastAPI, ClawGateway]:
         except Exception as exc:
             logger.warning("[gateway] observability init skipped: %s", exc)
 
+    # The AINDY runtime keeps its OWN Prometheus registry (AINDY/platform_layer/metrics.py),
+    # which nodus-observability's /metrics does not include. With the effect seam on, that made
+    # `aindy_effect_gate_outcomes_total` — the only signal an operator gets that EXACTLY_ONCE did
+    # not hold — unreadable from outside this process, so any soak of the gate reported zero
+    # because nobody could read it (aindy-runtime SUBSTRATE-WITNESS-1). Exposed separately so the
+    # two registries stay distinct.
+    if config.aindy.enabled and config.aindy.effects_backend == "aindy":
+        @app.get("/metrics/aindy", include_in_schema=False)
+        async def aindy_metrics():
+            from fastapi.responses import Response
+            from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+            from AINDY.platform_layer.metrics import REGISTRY
+
+            return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
+
     # Claw routes — work in both standalone and mounted mode.
     app.include_router(_build_claw_router(gateway, config))
 
