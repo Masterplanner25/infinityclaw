@@ -62,9 +62,16 @@ class TelegramAdapter(BaseChannelAdapter):
 
     async def _do_connect(self) -> None:
         from aiogram import Bot, Dispatcher
+        from aiogram.client.default import DefaultBotProperties
         from aiogram.enums import ParseMode
 
-        self._bot = Bot(token=self._token, parse_mode=ParseMode.MARKDOWN_V2)
+        # aiogram 3.7 removed per-Bot `parse_mode=`; defaults moved to DefaultBotProperties.
+        # The installed aiogram is 3.29 — this adapter had never been run against it, because
+        # nothing constructed it (see claw/channels/factory.py).
+        self._bot = Bot(
+            token=self._token,
+            default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2),
+        )
         self._dispatcher = Dispatcher()
         self._register_handlers()
 
@@ -83,7 +90,7 @@ class TelegramAdapter(BaseChannelAdapter):
         thread_id: str = "",
         reply_to_id: str = "",
         attachments=None,
-    ) -> None:
+    ) -> str:
         if self._bot is None:
             raise RuntimeError("Telegram bot not connected")
 
@@ -98,11 +105,14 @@ class TelegramAdapter(BaseChannelAdapter):
         text = _escape_md(content)
 
         try:
-            await self._bot.send_message(chat_id, text, **kwargs)
+            sent = await self._bot.send_message(chat_id, text, **kwargs)
         except Exception as exc:
             # Fallback to plain text on markdown errors
             logger.warning("[telegram] markdown send failed, retrying plain: %s", exc)
-            await self._bot.send_message(chat_id, content, parse_mode=None, **kwargs)
+            sent = await self._bot.send_message(chat_id, content, parse_mode=None, **kwargs)
+        # Telegram's OWN id for the delivered message: the receipt a mediated effect records,
+        # and the only identifier that lets the far side be counted independently of us.
+        return str(getattr(sent, "message_id", "") or "")
 
     async def _do_subscribe(self) -> AsyncIterator[Message]:
         while True:
@@ -146,13 +156,21 @@ class TelegramAdapter(BaseChannelAdapter):
 
         # Filter by allowed users
         sender_id = str(tg_msg.from_user.id) if tg_msg.from_user else ""
+        logger.info("[telegram] inbound from=%s chat=%s chars=%d",
+                    sender_id, tg_msg.chat.id, len(tg_msg.text or tg_msg.caption or ""))
         if self._allowed_users and sender_id not in self._allowed_users:
+            # A silent drop here reads exactly like "the bot never got the message". Say which
+            # id was refused: the allowlist is the one setting nobody can check from outside.
+            logger.warning("[telegram] DROPPED: sender %s is not in allowed_users %s",
+                           sender_id, sorted(self._allowed_users))
             return
 
         # Mention gating for groups
         is_private = tg_msg.chat.type == "private"
         if not is_private and self._require_mention:
             if not _has_bot_mention(tg_msg):
+                logger.info("[telegram] DROPPED: group message without a mention (chat=%s)",
+                            tg_msg.chat.id)
                 return
 
         # Typing indicator
@@ -164,6 +182,8 @@ class TelegramAdapter(BaseChannelAdapter):
         # Build normalized Message
         text = tg_msg.text or tg_msg.caption or ""
         if not text and not tg_msg.photo and not tg_msg.document and not tg_msg.voice:
+            logger.info("[telegram] DROPPED: no text and no supported attachment (chat=%s)",
+                        tg_msg.chat.id)
             return
 
         attachments = _extract_attachments(tg_msg)
