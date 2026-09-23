@@ -136,3 +136,50 @@ async def test_send_to_an_unregistered_channel_raises_instead_of_reading_as_succ
     with pytest.raises(ChannelNotRegistered) as exc:
         await reg.send("telegram", "hi", "peer")
     assert "telegram" in str(exc.value)
+
+
+# ── the runtime's own registry, readable from a live Claw ────────────────────────────────
+
+def _cfg(effects_backend: str, monkeypatch):
+    from claw.config.loader import load_config
+
+    cfg = load_config("claw.toml")
+    cfg.aindy.enabled = effects_backend == "aindy"
+    cfg.aindy.effects_backend = effects_backend
+    cfg.aindy.database_url = "postgresql://unused:unused@127.0.0.1:1/unused"
+    cfg.aindy.user_id = "f33f40c2-9580-4c42-a281-2d507c4eddff"
+    return cfg
+
+
+def _paths(app) -> set:
+    """FastAPI wraps sub-routers lazily — `app.routes` holds _IncludedRouter objects with no
+    `.path`. Walk them."""
+    found = set()
+    stack = list(app.routes)
+    while stack:
+        r = stack.pop()
+        path = getattr(r, "path", None)
+        if path:
+            found.add(path)
+        stack.extend(getattr(r, "routes", []) or [])
+    return found
+
+
+def test_metrics_aindy_is_absent_when_the_seam_is_off(monkeypatch):
+    """No seam, no runtime registry to read — the route must not exist at all."""
+    from claw.gateway.server import build_app
+
+    app, _ = build_app(_cfg("local", monkeypatch))
+    assert "/metrics/aindy" not in _paths(app)
+
+
+def test_metrics_aindy_serves_the_runtime_registry_when_the_seam_is_on(monkeypatch):
+    """The gate counter an operator needs lives in AINDY's registry, not nodus-observability's."""
+    from claw.gateway.server import build_app
+
+    app, _ = build_app(_cfg("aindy", monkeypatch))
+    assert "/metrics/aindy" in _paths(app), sorted(_paths(app))
+
+    from AINDY.platform_layer.metrics import REGISTRY
+    names = {m.name for m in REGISTRY.collect()}
+    assert "aindy_effect_gate_outcomes" in names, "the gate counter must be in the served registry"
