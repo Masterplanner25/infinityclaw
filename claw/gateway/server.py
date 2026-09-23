@@ -297,6 +297,16 @@ class ClawGateway:
 
         if self._effects is not None:
             self._effects.start(asyncio.get_running_loop())
+
+        # External channels declared as [channels.extra.<name>]. Until now nothing read that
+        # table and `register_adapter` had no callers, so enabling a channel in the config did
+        # nothing and the gateway came up WebChat-only. A block that cannot be built is logged
+        # by name and skipped — never silently absent.
+        from claw.channels.factory import build_extra_adapters
+
+        for _adapter in build_extra_adapters(self.config.channels.extra):
+            self.channel_registry.register(_adapter)
+
         await self.channel_registry.connect_all()
 
         # Start listener tasks for all non-WebChat adapters

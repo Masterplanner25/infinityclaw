@@ -144,12 +144,15 @@ class AINDYEffectSeam:
             self._registry.send(args["channel_id"], args["content"], args["peer_id"], **kwargs),
             self._loop,
         )
-        future.result(timeout=_SEND_TIMEOUT_S)
+        receipt = future.result(timeout=_SEND_TIMEOUT_S)
         return {
             "delivered": True,
             "channel_id": args["channel_id"],
             "peer_id": args["peer_id"],
             "message_key": args["message_key"],
+            # the provider's own id for the delivered message — the receipt the ledger keeps, and
+            # the only field in the row that a third party (Telegram, Discord, ...) issued
+            "message_id": str(receipt or ""),
             "delivered_at": datetime.now(timezone.utc).isoformat(),
         }
 

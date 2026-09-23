@@ -70,10 +70,16 @@ enabled = false
 [channels.webchat]
 enabled = true
 
-# Uncomment and fill in to enable channel adapters:
+# Uncomment a block to enable that adapter. Each is built at startup by
+# claw/channels/factory.py; a secret may be left out of the file and read from the
+# environment instead (TELEGRAM_BOT_TOKEN, DISCORD_BOT_TOKEN, SLACK_BOT_TOKEN,
+# SLACK_APP_TOKEN, MATRIX_ACCESS_TOKEN, SIGNAL_PHONE). Add `enabled = false` to keep a
+# channel configured but off.
 
 # [channels.extra.telegram]
-# token = "BOT_TOKEN"
+# token = "BOT_TOKEN"          # or leave out and set $TELEGRAM_BOT_TOKEN
+# allowed_users = ["12345"]    # empty = anyone who finds the bot
+# require_mention = false      # groups only; DMs are never mention-gated
 
 # [channels.extra.discord]
 # token = "BOT_TOKEN"
